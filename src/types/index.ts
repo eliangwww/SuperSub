@@ -86,7 +86,7 @@ export interface SubscriptionRule {
   id: number;
   subscription_id: string;
   name: string;
-  type: 'filter_by_name_keyword' | 'filter_by_name_regex' | 'rename_by_regex';
+  type: 'filter_by_name_keyword' | 'filter_by_name_regex' | 'rename_by_regex' | 'exclude_by_name_keyword';
   value: string; // JSON string
   enabled: number; // 0 or 1
   created_at: string;
