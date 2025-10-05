@@ -56,7 +56,7 @@ const ruleSaveLoading = ref(false)
 const ruleFormState = reactive({
   id: 0,
   name: '',
-  type: 'filter_by_name_keyword' as SubscriptionRule['type'],
+  type: 'filter_by_name_keyword' as SubscriptionRule['type'] | 'exclude_by_name_keyword',
   value: '',
   enabled: 1,
   // Fields for user-friendly forms
@@ -68,10 +68,28 @@ const ruleFormState = reactive({
 
 const ruleModalTitle = computed(() => (editingRule.value ? '编辑规则' : '新增规则'))
 const ruleTypeOptions = [
-  { label: '按名称关键词过滤', value: 'filter_by_name_keyword' },
+  { label: '按名称关键词过滤 (保留)', value: 'filter_by_name_keyword' },
+  { label: '按名称关键词排除', value: 'exclude_by_name_keyword' },
   { label: '按名称正则过滤', value: 'filter_by_name_regex' },
   { label: '按正则重命名', value: 'rename_by_regex' },
 ]
+
+const commonKeywords = [
+  '香港', 'HK', '🇭🇰',
+  '台湾', 'TW', '🇹🇼',
+  '日本', 'JP', '🇯🇵',
+  '美国', 'US', '🇺🇸',
+  '新加坡', 'SG', '🇸🇬',
+  '韩国', 'KR', '🇰🇷',
+  '英国', 'UK', '🇬🇧',
+  'IEPL', 'IPLC', '专线', 'BGP',
+]
+
+const addKeyword = (keyword: string) => {
+  if (!ruleFormState.keywords.includes(keyword)) {
+    ruleFormState.keywords.push(keyword)
+  }
+}
 
 
 const formState = reactive({
@@ -467,7 +485,7 @@ const openRuleFormModal = (rule: SubscriptionRule | null) => {
     // Parse JSON value into user-friendly fields
     try {
       const parsedValue = JSON.parse(rule.value)
-      if (rule.type === 'filter_by_name_keyword' && parsedValue.keywords) {
+      if ((rule.type === 'filter_by_name_keyword' || rule.type === 'exclude_by_name_keyword') && parsedValue.keywords) {
         ruleFormState.keywords = parsedValue.keywords
       } else if (rule.type === 'rename_by_regex' && parsedValue.regex && parsedValue.format) {
         ruleFormState.renameRegex = parsedValue.regex
@@ -492,7 +510,7 @@ const handleSaveRule = async () => {
   try {
     // Construct the JSON value based on the rule type
     let jsonValue = {}
-    if (ruleFormState.type === 'filter_by_name_keyword') {
+    if (ruleFormState.type === 'filter_by_name_keyword' || ruleFormState.type === 'exclude_by_name_keyword') {
       jsonValue = { keywords: ruleFormState.keywords }
     } else if (ruleFormState.type === 'rename_by_regex') {
       jsonValue = { regex: ruleFormState.renameRegex, format: ruleFormState.renameFormat }
@@ -788,19 +806,43 @@ onMounted(fetchSubscriptions)
         <n-form-item label="规则类型" required>
           <n-select v-model:value="ruleFormState.type" :options="ruleTypeOptions" />
         </n-form-item>
-        <n-form-item v-if="ruleFormState.type === 'filter_by_name_keyword'" label="关键词" required>
+        <n-form-item v-if="ruleFormState.type === 'filter_by_name_keyword' || ruleFormState.type === 'exclude_by_name_keyword'" label="关键词" required>
           <n-dynamic-tags v-model:value="ruleFormState.keywords" />
           <template #feedback>
-            保留节点名包含任意一个关键词的节点。输入后按回车确认。
+            <span v-if="ruleFormState.type === 'filter_by_name_keyword'">保留节点名包含任意一个关键词的节点。输入后按回车确认。</span>
+            <span v-else>排除节点名包含任意一个关键词的节点。输入后按回车确认。</span>
           </template>
+          <div class="mt-2">
+            <p class="text-xs text-gray-500 mb-1">常用标签 (点击添加):</p>
+            <n-space :size="'small'" style="flex-wrap: wrap;">
+              <n-tag
+                v-for="keyword in commonKeywords"
+                :key="keyword"
+                size="small"
+                :bordered="false"
+                type="info"
+                style="cursor: pointer;"
+                @click="addKeyword(keyword)"
+              >
+                {{ keyword }}
+              </n-tag>
+            </n-space>
+          </div>
         </n-form-item>
 
         <n-form-item v-else-if="ruleFormState.type === 'rename_by_regex'" label="重命名规则" required>
           <n-space vertical style="width: 100%;">
             <n-input v-model:value="ruleFormState.renameRegex" placeholder="匹配规则 (Regex)" />
-            <div class="text-xs text-gray-400 mt-1">示例: 从 "[HK] Node 01" 提取 "HK" 和 "01", 可用 `^\[(.*)\]\s.*(\d+)$`</div>
+            <div class="text-xs text-gray-400 mt-1">
+              <p>示例 1: 从 "[HK] Node 01" 提取 "HK" 和 "01", 可用 `^\[(.*)\]\s.*(\d+)$`</p>
+              <p>示例 2: 提取 "HK-专线-01" 中的 "HK" 和 "专线", 可用 `(HK)-(专线)`</p>
+            </div>
             <n-input v-model:value="ruleFormState.renameFormat" placeholder="重命名格式" class="mt-2" />
-            <div class="text-xs text-gray-400 mt-1">示例: `NewName-$1-$2` 会得到 "NewName-HK-01"。`$1` 代表第一个括号匹配的内容。</div>
+            <div class="text-xs text-gray-400 mt-1">
+              <p>用法: `$1`, `$2` 代表上方匹配规则中的第1、2个括号捕获的内容。</p>
+              <p>示例 1: `NewName-$1-$2` 会得到 "NewName-HK-01"。</p>
+              <p>示例 2: `[$2] $1` 会得到 "[专线] HK"。</p>
+            </div>
           </n-space>
         </n-form-item>
 
@@ -810,7 +852,14 @@ onMounted(fetchSubscriptions)
             placeholder="输入用于过滤的正则表达式"
           />
           <template #feedback>
-            保留节点名匹配正则表达式的节点。示例: `(?i)iepl` (不区分大小写匹配 "iepl")
+            <p>保留节点名匹配正则表达式的节点。</p>
+            <p><b>用法示例:</b></p>
+            <ul class="list-disc list-inside">
+              <li>匹配多个关键词 (香港或澳门): `香港|澳门`</li>
+              <li>匹配IEPL且不含广州: `IEPL.*(?!广州)`</li>
+              <li>不区分大小写匹配 "iepl": `(?i)iepl`</li>
+              <li>匹配包含 "VIP" 但不包含 "过期" 的节点: `^(?=.*VIP)(?!.*过期)`</li>
+            </ul>
           </template>
         </n-form-item>
 

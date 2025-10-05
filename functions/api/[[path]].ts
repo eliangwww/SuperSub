@@ -477,7 +477,7 @@ subscriptions.post('/update-all', async (c) => {
     // This is a simplified sequential update. A real-world scenario might use queues.
     for (const sub of subs) {
         try {
-            const response = await fetch(sub.url, { headers: { 'User-Agent': 'ClashforWindows/0.20.39' } });
+            const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
             if (response.ok) {
                 const buffer = await response.arrayBuffer();
                 const decoder = new TextDecoder('utf-8');
@@ -553,6 +553,15 @@ const applySubscriptionRules = (nodes: (ParsedNode & { id: string; raw: string; 
 };
 
 
+const userAgents = [
+    'V2RayN/6.23',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+    'ClashforWindows/0.20.39',
+    'Clash Meta for Android/2.9.1',
+    'Quantumult X/1.0.30',
+    'Surge/5.2.1'
+];
+
 subscriptions.post('/preview', async (c) => {
     const user = c.get('jwtPayload');
     const { url, subscription_id, apply_rules } = await c.req.json<{ url: string, subscription_id?: string, apply_rules?: boolean }>();
@@ -560,15 +569,6 @@ subscriptions.post('/preview', async (c) => {
     if (!url) {
         return c.json({ success: false, message: 'Missing subscription URL' }, 400);
     }
-
-    const userAgents = [
-        'V2RayN/6.23',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-        'ClashforWindows/0.20.39',
-        'Clash Meta for Android/2.9.1',
-        'Quantumult X/1.0.30',
-        'Surge/5.2.1'
-    ];
 
     try {
         const response = await fetch(url, {
@@ -590,75 +590,7 @@ subscriptions.post('/preview', async (c) => {
             content = content.slice(1);
         }
 
-        let nodes: (ParsedNode & { id: string, raw: string })[] = [];
-        let isYaml = false;
-
-        // 1. Try parsing as YAML
-        try {
-            if (content.includes('proxies:') || content.includes('proxy-groups:')) {
-                const data = yaml.load(content) as any;
-                if (data && Array.isArray(data.proxies)) {
-                    isYaml = true;
-                    nodes = data.proxies.map((proxy: any) => {
-                        // Convert clash proxy to our ParsedNode format
-                        const protocol = proxy.type;
-                        return {
-                            id: crypto.randomUUID(),
-                            name: proxy.name,
-                            protocol: protocol,
-                            server: proxy.server,
-                            port: proxy.port,
-                            type: protocol,
-                            password: proxy.password || proxy.uuid,
-                            protocol_params: proxy,
-                            link: `clash://${protocol}/${proxy.name}`, // Create a placeholder link
-                            raw: `clash://${protocol}/${proxy.name}`,
-                        };
-                    });
-                }
-            }
-        } catch (e) {
-            // Not valid YAML or failed to parse, proceed to next method
-            console.log("YAML parsing failed, trying as plain text.");
-        }
-
-        // 2. If not YAML, try parsing as base64 encoded list
-        if (!isYaml) {
-            try {
-                const decodedContent = atob(content);
-                // Check if decoded content is yaml
-                 if (decodedContent.includes('proxies:') || decodedContent.includes('proxy-groups:')) {
-                     const data = yaml.load(decodedContent) as any;
-                     if (data && Array.isArray(data.proxies)) {
-                         isYaml = true;
-                         nodes = data.proxies.map((proxy: any) => ({
-                            id: crypto.randomUUID(),
-                            name: proxy.name,
-                            protocol: proxy.type,
-                            server: proxy.server,
-                            port: proxy.port,
-                            type: proxy.type,
-                            password: proxy.password || proxy.uuid,
-                            protocol_params: proxy,
-                            link: `clash://${proxy.type}/${proxy.name}`,
-                            raw: `clash://${proxy.type}/${proxy.name}`,
-                         }));
-                     }
-                 } else {
-                    nodes = parseNodeLinks(decodedContent);
-                 }
-            } catch (e) {
-                // Not base64, treat as plain text list of links
-                nodes = parseNodeLinks(content);
-            }
-        }
-        
-        // 3. If still no nodes, treat as plain text list of links
-        if (nodes.length === 0 && !isYaml) {
-            nodes = parseNodeLinks(content);
-        }
-
-        let finalNodes = nodes;
+        let finalNodes = parseSubscriptionContent(content);
 
         if (apply_rules && subscription_id) {
             const { results: rules } = await c.env.DB.prepare(
@@ -666,7 +598,7 @@ subscriptions.post('/preview', async (c) => {
             ).bind(subscription_id, user.id).all();
 
             if (rules && rules.length > 0) {
-                finalNodes = applySubscriptionRules(nodes, rules);
+                finalNodes = applySubscriptionRules(finalNodes, rules);
             }
         }
         
@@ -695,51 +627,84 @@ subscriptions.post('/preview', async (c) => {
     }
 });
 
-// Helper function to get accurate node count from subscription content
-const getAccurateNodeCount = (content: string): number => {
-    // Step 1: Try to parse as Clash YAML directly
+// Helper function to parse subscription content into a node list
+const parseSubscriptionContent = (content: string): (ParsedNode & { id: string, raw: string })[] => {
+    let nodes: (ParsedNode & { id: string, raw: string })[] = [];
+    let isYaml = false;
+
+    // 1. Try parsing as YAML
     try {
         if (content.includes('proxies:') || content.includes('proxy-groups:')) {
             const data = yaml.load(content) as any;
-            if (data && Array.isArray(data.proxies) && data.proxies.length > 0) {
-                return data.proxies.length;
+            if (data && Array.isArray(data.proxies)) {
+                isYaml = true;
+                nodes = data.proxies.map((proxy: any) => {
+                    const protocol = proxy.type;
+                    return {
+                        id: crypto.randomUUID(),
+                        name: proxy.name,
+                        protocol: protocol,
+                        server: proxy.server,
+                        port: proxy.port,
+                        type: protocol,
+                        password: proxy.password || proxy.uuid,
+                        protocol_params: proxy,
+                        link: `clash://${protocol}/${proxy.name}`,
+                        raw: `clash://${protocol}/${proxy.name}`,
+                    };
+                });
             }
         }
-    } catch (e) { /* Not a valid YAML, proceed. */ }
+    } catch (e) {
+        console.log("YAML parsing failed, trying as plain text.");
+    }
 
-    // Step 2: Try to decode as Base64
-    let decodedContent: string | null = null;
-    try {
-        // Use Buffer for more robust decoding in Node.js environment (like wrangler)
-        decodedContent = Buffer.from(content, 'base64').toString('utf-8');
-    } catch (e) { /* Not a valid Base64 string, proceed. */ }
-
-    if (decodedContent) {
-        // Step 2a: Check if the decoded content is a Clash YAML
+    // 2. If not YAML, try parsing as base64 encoded list
+    if (!isYaml) {
         try {
-            if (decodedContent.includes('proxies:') || decodedContent.includes('proxy-groups:')) {
-                const data = yaml.load(decodedContent) as any;
-                if (data && Array.isArray(data.proxies) && data.proxies.length > 0) {
-                    return data.proxies.length;
-                }
-            }
-        } catch (e) { /* Not a valid YAML, proceed. */ }
-
-        // Step 2b: Try to parse decoded content as a list of links
-        const nodesFromBase64 = parseNodeLinks(decodedContent);
-        if (nodesFromBase64.length > 0) {
-            return nodesFromBase64.length;
+            const decodedContent = atob(content);
+             if (decodedContent.includes('proxies:') || decodedContent.includes('proxy-groups:')) {
+                 const data = yaml.load(decodedContent) as any;
+                 if (data && Array.isArray(data.proxies)) {
+                     isYaml = true;
+                     nodes = data.proxies.map((proxy: any) => ({
+                        id: crypto.randomUUID(),
+                        name: proxy.name,
+                        protocol: proxy.type,
+                        server: proxy.server,
+                        port: proxy.port,
+                        type: proxy.type,
+                        password: proxy.password || proxy.uuid,
+                        protocol_params: proxy,
+                        link: `clash://${proxy.type}/${proxy.name}`,
+                        raw: `clash://${proxy.type}/${proxy.name}`,
+                     }));
+                 }
+             } else {
+                nodes = parseNodeLinks(decodedContent);
+             }
+        } catch (e) {
+            nodes = parseNodeLinks(content);
         }
     }
-
-    // Step 3: Fallback to parsing the original content as a list of links
-    const nodesFromPlainText = parseNodeLinks(content);
-    if (nodesFromPlainText.length > 0) {
-        return nodesFromPlainText.length;
+    
+    // 3. If still no nodes, treat as plain text list of links
+    if (nodes.length === 0 && !isYaml) {
+        nodes = parseNodeLinks(content);
     }
 
-    // If all attempts fail, return 0
-    return 0;
+    return nodes;
+};
+
+// Helper function to get accurate node count from subscription content
+const getAccurateNodeCount = (content: string): number => {
+    try {
+        const nodes = parseSubscriptionContent(content);
+        return nodes.length;
+    } catch (error) {
+        console.error("Failed to get accurate node count:", error);
+        return 0;
+    }
 };
 
 
@@ -753,7 +718,7 @@ subscriptions.post('/:id/update', async (c) => {
     }
 
     try {
-        const response = await fetch(subscription.url, { headers: { 'User-Agent': 'ClashforWindows/0.20.39' } });
+        const response = await fetch(subscription.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
         if (!response.ok) {
             const error = `Failed to fetch: ${response.statusText}`;
             await c.env.DB.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), error, id).run();
