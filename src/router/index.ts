@@ -5,7 +5,6 @@ import NodesView from '../views/NodesView.vue'
 import SubscriptionsView from '../views/SubscriptionsView.vue'
 import ProfilesView from '../views/ProfilesView.vue'
 import SettingsView from '../views/SettingsView.vue'
-import PipelineView from '../views/PipelineView.vue'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
 
@@ -35,13 +34,6 @@ const router = createRouter({
       name: 'profiles',
       component: ProfilesView,
       meta: { requiresAuth: true }
-    },
-    {
-     path: '/profiles/:id/pipeline',
-     name: 'profile-pipeline',
-     component: PipelineView,
-     props: true,
-     meta: { requiresAuth: true }
     },
     {
       path: '/settings',
