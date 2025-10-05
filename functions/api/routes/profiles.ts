@@ -23,8 +23,8 @@ profiles.get('/:id/subscribe', async (c) => {
 
         // 1. Fetch nodes from subscriptions
         if (content.subscription_ids && content.subscription_ids.length > 0) {
-            const subIds = content.subscription_ids.join(',');
-            const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, url FROM subscriptions WHERE id IN (${'?,'.repeat(content.subscription_ids.length).slice(0, -1)}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; url: string; }>();
+            const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
+            const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; url: string; }>();
 
             for (const sub of subscriptions) {
                 try {
@@ -48,8 +48,8 @@ profiles.get('/:id/subscribe', async (c) => {
 
         // 2. Fetch manually added nodes
         if (content.nodeIds && content.nodeIds.length > 0) {
-            const nodeIds = content.nodeIds.join(',');
-            const { results: manualNodes } = await c.env.DB.prepare(`SELECT * FROM nodes WHERE id IN (${'?,'.repeat(content.nodeIds.length).slice(0, -1)}) AND user_id = ?`).bind(...content.nodeIds, userId).all<any>();
+            const nodePlaceholders = content.nodeIds.map(() => '?').join(',');
+            const { results: manualNodes } = await c.env.DB.prepare(`SELECT * FROM nodes WHERE id IN (${nodePlaceholders}) AND user_id = ?`).bind(...content.nodeIds, userId).all<any>();
             
             const parsedManualNodes = manualNodes.map(n => ({
                 id: n.id,
@@ -107,6 +107,88 @@ profiles.get('/:id/subscribe', async (c) => {
 
 // All other routes in this group require auth
 profiles.use('*', manualAuthMiddleware);
+
+// New route for previewing nodes in a profile
+profiles.get('/:id/preview-nodes', async (c) => {
+    const user = c.get('jwtPayload');
+    const { id } = c.req.param();
+    const profile = await c.env.DB.prepare('SELECT * FROM profiles WHERE id = ? AND user_id = ?').bind(id, user.id).first<any>();
+
+    if (!profile) {
+        return c.json({ success: false, message: 'Profile not found' }, 404);
+    }
+
+    try {
+        const content = JSON.parse(profile.content || '{}');
+        const userId = profile.user_id;
+
+        let allNodes: (ParsedNode & { id: string; raw: string; })[] = [];
+
+        // 1. Fetch nodes from subscriptions
+        if (content.subscription_ids && content.subscription_ids.length > 0) {
+            const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
+            const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; url: string; }>();
+
+            for (const sub of subscriptions) {
+                try {
+                    const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
+                    if (response.ok) {
+                        const subContent = await response.text();
+                        let nodes = parseSubscriptionContent(subContent);
+
+                        const { results: rules } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
+                        if (rules && rules.length > 0) {
+                            nodes = applySubscriptionRules(nodes, rules);
+                        }
+                        allNodes.push(...nodes);
+                    }
+                } catch (e) {
+                    console.error(`Failed to process subscription ${sub.id}:`, e);
+                }
+            }
+        }
+
+        // 2. Fetch manually added nodes
+        if (content.nodeIds && content.nodeIds.length > 0) {
+            const nodePlaceholders = content.nodeIds.map(() => '?').join(',');
+            const { results: manualNodes } = await c.env.DB.prepare(`SELECT * FROM nodes WHERE id IN (${nodePlaceholders}) AND user_id = ?`).bind(...content.nodeIds, userId).all<any>();
+            
+            const parsedManualNodes = manualNodes.map(n => ({
+                id: n.id,
+                name: n.name,
+                protocol: n.protocol,
+                server: n.server,
+                port: n.port,
+                protocol_params: JSON.parse(n.protocol_params || '{}'),
+                link: n.link,
+                raw: n.link,
+            }));
+            allNodes.push(...parsedManualNodes);
+        }
+
+        // 3. Analyze the final node list
+        const analysis = {
+            total: allNodes.length,
+            protocols: allNodes.reduce((acc, node) => {
+                const protocol = node.protocol || 'unknown';
+                acc[protocol] = (acc[protocol] || 0) + 1;
+                return acc;
+            }, {} as Record<string, number>),
+            regions: allNodes.reduce((acc, node) => {
+                const match = node.name.match(/\[(.*?)\]|\((.*?)\)|(香港|澳门|台湾|新加坡|日本|美国|英国|德国|法国|韩国|俄罗斯|IEPL|IPLC)/);
+                const region = match ? (match[1] || match[2] || match[3] || 'Unknown') : 'Unknown';
+                acc[region] = (acc[region] || 0) + 1;
+                return acc;
+            }, {} as Record<string, number>),
+        };
+
+        return c.json({ success: true, data: { nodes: allNodes, analysis: analysis } });
+
+    } catch (e: any) {
+        console.error(`Error generating profile preview for ${id}:`, e);
+        return c.json({ success: false, message: `Internal server error: ${e.message}` }, 500);
+    }
+});
 
 profiles.get('/', async (c) => {
     const user = c.get('jwtPayload');
