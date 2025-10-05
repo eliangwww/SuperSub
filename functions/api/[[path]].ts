@@ -11,6 +11,7 @@ import subscriptionRoutes from './routes/subscriptions';
 import profileRoutes from './routes/profiles';
 import adminRoutes from './routes/admin';
 import assetRoutes from './routes/assets';
+import groupRoutes from './routes/groups';
 
 export const app = new Hono<{ Bindings: Env }>().basePath('/api');
 
@@ -26,6 +27,7 @@ app.route('/subscriptions', subscriptionRoutes);
 app.route('/profiles', profileRoutes);
 app.route('/admin', adminRoutes);
 app.route('/subconverter-assets', assetRoutes);
+app.route('/groups', groupRoutes);
 
 // Other remaining routes from the original file
 app.get('/stats', manualAuthMiddleware, async (c) => {

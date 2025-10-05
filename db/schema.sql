@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS nodes (
   latency INTEGER,
   last_checked TEXT,
   error TEXT,
-  FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+  FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+  FOREIGN KEY (group_id) REFERENCES node_groups (id) ON DELETE SET NULL
 );
 
 -- Create subscriptions table
@@ -167,10 +168,14 @@ CREATE TABLE IF NOT EXISTS ua_mappings (
 -- Create other tables that were missed
 CREATE TABLE IF NOT EXISTS node_groups (
   id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
   name TEXT NOT NULL,
   description TEXT,
+  sort_order INTEGER DEFAULT 0,
+  is_enabled BOOLEAN DEFAULT TRUE,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS subscription_processing_logs (

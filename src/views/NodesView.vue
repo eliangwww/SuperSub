@@ -1,28 +1,82 @@
 <script setup lang="ts">
 import { ref, onMounted, h, reactive, computed, watch, onBeforeUnmount } from 'vue';
-import { useMessage, useDialog, NButton, NSpace, NTag, NIcon, NPageHeader, NDataTable, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpin } from 'naive-ui';
+import { useMessage, useDialog, NButton, NSpace, NTag, NIcon, NPageHeader, NDataTable, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpin, NTabs, NTabPane, NDropdown } from 'naive-ui';
 import { debounce } from 'lodash-es';
 import type { DataTableColumns } from 'naive-ui';
 import { Node } from '@/types';
 import { useAuthStore } from '@/stores/auth';
+import { useGroupStore, type NodeGroup } from '@/stores/groups';
 import { FlashOutline as FlashIcon } from '@vicons/ionicons5';
 import { parseNodeLinks, ParsedNode } from '@/utils/nodeParser';
+import { useApi } from '@/composables/useApi';
 
+const api = useApi();
 const message = useMessage();
 const dialog = useDialog();
 const authStore = useAuthStore();
+const groupStore = useGroupStore();
 const nodes = ref<Node[]>([]);
 const loading = ref(true);
 const checkingAll = ref(false); // Keep for future "check all" feature
 const checkedRowKeys = ref<string[]>([]);
 const filterKeyword = ref('');
+const activeTab = ref('all');
+
+const handleBatchAction = (action: 'sort' | 'deduplicate' | 'clear') => {
+  const groupName = activeTab.value === 'all'
+    ? '所有'
+    : activeTab.value === 'ungrouped'
+      ? '未分组'
+      : groupStore.groups.find(g => g.id === activeTab.value)?.name || '未知';
+
+  const actionTextMap = {
+    sort: '排序',
+    deduplicate: '去重',
+    clear: '清空',
+  };
+  const actionText = actionTextMap[action];
+
+  dialog.warning({
+    title: `确认${actionText}`,
+    content: `确定要对【${groupName}】分组下的节点执行【${actionText}】操作吗？`,
+    positiveText: '确定',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const response = await api.post('/nodes/batch-actions', {
+          action,
+          groupId: activeTab.value,
+        });
+        if (response.success) {
+          message.success(response.message || '操作成功');
+          fetchData(); // Refresh data
+        } else {
+          message.error(response.message || '操作失败');
+        }
+      } catch (error: any) {
+        message.error(error.message || '请求失败');
+      }
+    },
+  });
+};
 
 const filteredNodes = computed(() => {
-  if (!filterKeyword.value) {
-    return nodes.value;
-  }
   const keyword = filterKeyword.value.toLowerCase();
-  return nodes.value.filter(node => node.name.toLowerCase().includes(keyword));
+  
+  return nodes.value.filter(node => {
+    // Group filter
+    const inGroup = activeTab.value === 'all'
+      ? true
+      : activeTab.value === 'ungrouped'
+        ? !node.group_id
+        : node.group_id === activeTab.value;
+
+    if (!inGroup) return false;
+
+    // Keyword filter
+    if (!keyword) return true;
+    return node.name.toLowerCase().includes(keyword);
+  });
 });
 
 const createColumns = ({ onTest, onEdit, onDelete, onMove }: {
@@ -271,6 +325,23 @@ const showAddFromLinkModal = ref(false);
 const addLink = ref('');
 const addFromLinkLoading = ref(false);
 const previewNodes = ref<(ParsedNode & { id: string; raw: string; })[]>([]);
+const importGroupId = ref<string | undefined>(undefined);
+
+// For Move to Group modal
+const showMoveToGroupModal = ref(false);
+const moveToGroupId = ref<string | null>(null);
+const moveToGroupLoading = ref(false);
+
+// For Add Group modal
+const showAddGroupModal = ref(false);
+const newGroupName = ref('');
+const addGroupLoading = ref(false);
+
+// For Edit Group modal
+const showEditGroupModal = ref(false);
+const editingGroup = ref<NodeGroup | null>(null);
+const editingGroupName = ref('');
+const editGroupLoading = ref(false);
 
 // Columns for the preview table in the modal
 const previewColumns: DataTableColumns<ParsedNode> = [
@@ -385,7 +456,10 @@ const handleBatchImport = async () => {
         'Authorization': `Bearer ${authStore.token}`,
       },
       // The backend's batch-import endpoint can accept pre-parsed nodes.
-      body: JSON.stringify({ nodes: previewNodes.value }),
+      body: JSON.stringify({
+        nodes: previewNodes.value,
+        groupId: importGroupId.value || null, // Send null if undefined
+      }),
     });
 
     const result: { success: boolean; message?: string } = await response.json();
@@ -472,32 +546,6 @@ const handleSaveOrder = async () => {
   }
 };
 
-const sortNodesByName = () => {
-  nodes.value.sort((a, b) => a.name.localeCompare(b.name));
-  orderChanged.value = true;
-  message.success('节点已按名称排序，请手动保存。');
-};
-
-const deduplicateNodesByLink = () => {
-  const originalCount = nodes.value.length;
-  const seenLinks = new Set<string>();
-  const uniqueNodes: Node[] = [];
-  for (const node of nodes.value) {
-    if (!seenLinks.has(node.link)) {
-      seenLinks.add(node.link);
-      uniqueNodes.push(node);
-    }
-  }
-  nodes.value = uniqueNodes;
-  const removedCount = originalCount - uniqueNodes.length;
-  if (removedCount > 0) {
-    orderChanged.value = true;
-    message.success(`移除了 ${removedCount} 个重复节点，请手动保存。`);
-  } else {
-    message.info('没有发现重复节点。');
-  }
-};
-
 const columns = createColumns({
     onTest: testNode,
     onEdit: handleEditNode,
@@ -540,68 +588,115 @@ const handleBatchDelete = () => {
   });
 };
 
-const doClearManualNodes = async () => {
+const handleSaveGroup = async () => {
+  if (!newGroupName.value.trim()) {
+    message.warning('分组名称不能为空');
+    return;
+  }
+  addGroupLoading.value = true;
   try {
-    const response = await fetch('/api/nodes/manual', {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${authStore.token}` }
-    });
-    const result: { success: boolean, message?: string } = await response.json();
-    if (result.success) {
-      message.success(result.message || '手动节点已清空');
-      fetchData();
+    const response = await groupStore.addGroup(newGroupName.value);
+    if (response.success) {
+      message.success('分组创建成功');
+      showAddGroupModal.value = false;
+      newGroupName.value = '';
     } else {
-      message.error(result.message || '清空失败');
+      message.error(response.message || '创建失败');
     }
-  } catch (err) {
-    message.error('请求失败，请稍后重试');
+  } catch (error: any) {
+    message.error(error.message || '请求失败');
+  } finally {
+    addGroupLoading.value = false;
   }
 };
 
-const handleClearManualNodes = async () => {
+const getDropdownOptions = (group: NodeGroup) => {
+  return [
+    { label: '重命名', key: 'rename' },
+    { label: group.is_enabled ? '禁用' : '启用', key: 'toggle' },
+    { label: '删除', key: 'delete', props: { style: 'color: red;' } }
+  ];
+};
+
+const handleGroupAction = (key: string, group: NodeGroup) => {
+  switch (key) {
+    case 'rename':
+      editingGroup.value = group;
+      editingGroupName.value = group.name;
+      showEditGroupModal.value = true;
+      break;
+    case 'toggle':
+      groupStore.toggleGroup(group.id);
+      break;
+    case 'delete':
+      dialog.warning({
+        title: '确认删除',
+        content: `确定要删除分组 "${group.name}" 吗？分组下的节点将变为“未分组”。`,
+        positiveText: '确定',
+        negativeText: '取消',
+        onPositiveClick: async () => {
+          const response = await groupStore.deleteGroup(group.id);
+          if (response.success) {
+            message.success('分组删除成功');
+          } else {
+            message.error(response.message || '删除失败');
+          }
+        }
+      });
+      break;
+  }
+};
+
+const handleUpdateGroup = async () => {
+  if (!editingGroup.value || !editingGroupName.value.trim()) {
+    message.warning('分组名称不能为空');
+    return;
+  }
+  editGroupLoading.value = true;
   try {
-    const summaryResponse = await fetch('/api/nodes/manual-summary', {
-      headers: { 'Authorization': `Bearer ${authStore.token}` }
-    });
-    const summaryResult: { success: boolean; data?: { total: number; preview: string[] }; message?: string } = await summaryResponse.json();
-
-    if (!summaryResult.success || !summaryResult.data) {
-      message.error(summaryResult.message || '获取节点摘要失败');
-      return;
+    const response = await groupStore.updateGroup(editingGroup.value.id, editingGroupName.value);
+    if (response.success) {
+      message.success('分组更新成功');
+      showEditGroupModal.value = false;
+    } else {
+      message.error(response.message || '更新失败');
     }
+  } catch (error: any) {
+    message.error(error.message || '请求失败');
+  } finally {
+    editGroupLoading.value = false;
+  }
+};
 
-    const { total, preview } = summaryResult.data;
-
-    if (total === 0) {
-      message.info('没有可以清空的手动节点。');
-      return;
-    }
-
-    const previewContent = preview.length > 0
-      ? `即将删除的节点包括：${preview.join(', ')}${total > preview.length ? ` 等 ${total - preview.length} 个...` : ''}`
-      : '';
-
-    dialog.warning({
-      title: '确认清空手动节点',
-      content: () => [
-        h('div', `确定要删除所有 ${total} 个手动添加的节点吗？`),
-        h('div', { style: 'margin-top: 8px; font-size: 12px; color: #999;' }, '此操作不可恢复。'),
-        h('div', { style: 'margin-top: 8px; font-size: 12px; color: #999;' }, previewContent)
-      ],
-      positiveText: '确定删除',
-      negativeText: '取消',
-      onPositiveClick: () => {
-        doClearManualNodes();
-      }
+const handleMoveToGroup = async () => {
+  if (checkedRowKeys.value.length === 0) {
+    message.warning('请至少选择一个节点');
+    return;
+  }
+  moveToGroupLoading.value = true;
+  try {
+    const response = await api.post('/nodes/batch-update-group', {
+      nodeIds: checkedRowKeys.value,
+      groupId: moveToGroupId.value,
     });
-
-  } catch (err) {
-    message.error('请求摘要信息失败，请稍后重试');
+    if (response.success) {
+      message.success('节点分组更新成功');
+      showMoveToGroupModal.value = false;
+      checkedRowKeys.value = [];
+      fetchData(); // Refresh node list
+    } else {
+      message.error(response.message || '移动失败');
+    }
+  } catch (error: any) {
+    message.error(error.message || '请求失败');
+  } finally {
+    moveToGroupLoading.value = false;
   }
 };
 
 onMounted(() => {
   fetchData();
+  groupStore.fetchGroups();
   // setupSSE(); // Temporarily disabled
 });
 
@@ -619,10 +714,12 @@ onBeforeUnmount(() => {
       <template #extra>
         <n-space>
           <n-button v-if="orderChanged" type="success" @click="handleSaveOrder" :loading="saveOrderLoading">保存排序</n-button>
-          <n-button @click="sortNodesByName">一键排序</n-button>
-          <n-button @click="deduplicateNodesByLink">一键去重</n-button>
-          <n-button type="primary" @click="openModal(null)">新增节点</n-button>
-          <n-button type="error" @click="handleClearManualNodes">一键清空</n-button>
+          <n-button @click="handleBatchAction('sort')">一键排序</n-button>
+          <n-button @click="handleBatchAction('deduplicate')">一键去重</n-button>
+          <n-button type="primary" @click="openModal(null)">导入节点</n-button>
+          <n-button type="primary" ghost @click="showAddGroupModal = true">新增分组</n-button>
+          <n-button type="error" @click="handleBatchAction('clear')">一键清空</n-button>
+          <n-button type="primary" ghost @click="showMoveToGroupModal = true" :disabled="checkedRowKeys.length === 0">移动到分组</n-button>
           <n-button type="error" ghost @click="handleBatchDelete" :disabled="checkedRowKeys.length === 0">批量删除</n-button>
           <n-button type="primary" ghost @click="testAllNodes" :loading="checkingAll">检查所有节点</n-button>
         </n-space>
@@ -636,6 +733,22 @@ onBeforeUnmount(() => {
       class="mt-4"
       style="max-width: 300px;"
     />
+
+    <n-tabs type="card" class="mt-4" :value="activeTab" @update:value="activeTab = $event">
+      <n-tab-pane name="all" tab="全部" />
+      <n-tab-pane name="ungrouped" tab="未分组" />
+      <n-tab-pane v-for="group in groupStore.groups" :key="group.id" :name="group.id">
+        <template #tab>
+          <n-dropdown
+            trigger="click"
+            :options="getDropdownOptions(group)"
+            @select="(key) => handleGroupAction(key, group)"
+          >
+            <span :style="{ color: group.is_enabled ? '' : '#999' }">{{ group.name }}</span>
+          </n-dropdown>
+        </template>
+      </n-tab-pane>
+    </n-tabs>
 
     <n-data-table
       :columns="columns"
@@ -705,6 +818,15 @@ onBeforeUnmount(() => {
           />
         </n-form-item>
 
+        <n-form-item label="导入到分组">
+          <n-select
+            v-model:value="importGroupId"
+            placeholder="默认导入到“未分组”"
+            :options="groupStore.groups.map(g => ({ label: g.name, value: g.id }))"
+            clearable
+          />
+        </n-form-item>
+
         <n-space justify="end">
           <n-button @click="showAddFromLinkModal = false">取消</n-button>
           <n-button type="primary" @click="handleBatchImport" :loading="addFromLinkLoading" :disabled="previewNodes.length === 0">
@@ -714,5 +836,64 @@ onBeforeUnmount(() => {
       </n-form>
     </n-modal>
 
+    <n-modal
+      v-model:show="showAddGroupModal"
+      preset="card"
+      title="新增分组"
+      style="width: 400px;"
+      :mask-closable="false"
+    >
+      <n-form @submit.prevent="handleSaveGroup">
+        <n-form-item label="分组名称" required>
+          <n-input v-model:value="newGroupName" placeholder="请输入分组名称" />
+        </n-form-item>
+        <n-space justify="end">
+          <n-button @click="showAddGroupModal = false">取消</n-button>
+          <n-button type="primary" @click="handleSaveGroup" :loading="addGroupLoading">保存</n-button>
+        </n-space>
+      </n-form>
+    </n-modal>
+
+    <n-modal
+      v-model:show="showEditGroupModal"
+      preset="card"
+      title="重命名分组"
+      style="width: 400px;"
+      :mask-closable="false"
+    >
+      <n-form @submit.prevent="handleUpdateGroup">
+        <n-form-item label="新名称" required>
+          <n-input v-model:value="editingGroupName" placeholder="请输入新的分组名称" />
+        </n-form-item>
+        <n-space justify="end">
+          <n-button @click="showEditGroupModal = false">取消</n-button>
+          <n-button type="primary" @click="handleUpdateGroup" :loading="editGroupLoading">保存</n-button>
+        </n-space>
+      </n-form>
+    </n-modal>
+
   </div>
+
+    <n-modal
+      v-model:show="showMoveToGroupModal"
+      preset="card"
+      title="移动节点到分组"
+      style="width: 400px;"
+      :mask-closable="false"
+    >
+      <n-form @submit.prevent="handleMoveToGroup">
+        <n-form-item label="目标分组" required>
+          <n-select
+            v-model:value="moveToGroupId"
+            placeholder="请选择目标分组（可清空变为未分组）"
+            :options="groupStore.groups.map(g => ({ label: g.name, value: g.id }))"
+            clearable
+          />
+        </n-form-item>
+        <n-space justify="end">
+          <n-button @click="showMoveToGroupModal = false">取消</n-button>
+          <n-button type="primary" @click="handleMoveToGroup" :loading="moveToGroupLoading">确认移动</n-button>
+        </n-space>
+      </n-form>
+    </n-modal>
 </template>

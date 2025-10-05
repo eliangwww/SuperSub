@@ -97,6 +97,101 @@ nodes.post('/batch-delete', manualAuthMiddleware, async (c) => {
     return c.json({ success: true });
 });
 
+nodes.post('/batch-update-group', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { nodeIds, groupId } = await c.req.json<{ nodeIds: string[]; groupId: string | null }>();
+
+    if (!nodeIds || nodeIds.length === 0) {
+        return c.json({ success: false, message: '请至少选择一个节点' }, 400);
+    }
+
+    const stmts = nodeIds.map(id =>
+        c.env.DB.prepare('UPDATE nodes SET group_id = ? WHERE id = ? AND user_id = ?').bind(groupId, id, user.id)
+    );
+
+    await c.env.DB.batch(stmts);
+
+    return c.json({ success: true, message: '节点分组已更新' });
+});
+
+nodes.post('/batch-actions', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { action, groupId } = await c.req.json<{ action: 'sort' | 'deduplicate' | 'clear', groupId: string }>();
+
+    let whereClause = 'user_id = ?';
+    const params: (string | null)[] = [user.id];
+
+    if (groupId === 'ungrouped') {
+        whereClause += ' AND group_id IS NULL';
+    } else if (groupId !== 'all') {
+        whereClause += ' AND group_id = ?';
+        params.push(groupId);
+    }
+
+    try {
+        if (action === 'clear') {
+            const { meta } = await c.env.DB.prepare(`DELETE FROM nodes WHERE ${whereClause}`).bind(...params).run();
+            return c.json({ success: true, message: `成功清空 ${meta.changes || 0} 个节点。` });
+        }
+
+        if (action === 'deduplicate') {
+            const { results: nodesToDedupe } = await c.env.DB.prepare(`SELECT id, link FROM nodes WHERE ${whereClause}`).bind(...params).all<{ id: string, link: string }>();
+            
+            const seenLinks = new Set<string>();
+            const duplicateIds: string[] = [];
+            
+            for (const node of nodesToDedupe) {
+                if (seenLinks.has(node.link)) {
+                    duplicateIds.push(node.id);
+                } else {
+                    seenLinks.add(node.link);
+                }
+            }
+
+            if (duplicateIds.length > 0) {
+                const deleteStmts = duplicateIds.map(id => c.env.DB.prepare('DELETE FROM nodes WHERE id = ? AND user_id = ?').bind(id, user.id));
+                await c.env.DB.batch(deleteStmts);
+                return c.json({ success: true, message: `成功移除 ${duplicateIds.length} 个重复节点。` });
+            } else {
+                return c.json({ success: true, message: '没有发现重复节点。' });
+            }
+        }
+
+        if (action === 'sort') {
+            const { results: nodesToSort } = await c.env.DB.prepare(`SELECT id, name FROM nodes WHERE ${whereClause}`).bind(...params).all<{ id: string, name: string }>();
+            
+            nodesToSort.sort((a, b) => a.name.localeCompare(b.name));
+            
+            const sortedIds = nodesToSort.map(n => n.id);
+
+            // We need to fetch all nodes to preserve the order of other groups
+            const { results: allUserNodes } = await c.env.DB.prepare('SELECT id, group_id FROM nodes WHERE user_id = ? ORDER BY sort_order ASC').bind(user.id).all<{ id: string, group_id: string | null }>();
+
+            const groupNodes = sortedIds;
+            const otherNodes = allUserNodes.filter(n => !groupNodes.includes(n.id)).map(n => n.id);
+            
+            const finalOrderedIds = [...otherNodes, ...groupNodes];
+            
+            // Let's re-order based on the new full list
+            const finalStmts = finalOrderedIds.map((id, index) =>
+                c.env.DB.prepare('UPDATE nodes SET sort_order = ? WHERE id = ? AND user_id = ?').bind(index, id, user.id)
+            );
+
+            if (finalStmts.length > 0) {
+                await c.env.DB.batch(finalStmts);
+            }
+
+            return c.json({ success: true, message: '节点已按名称排序。' });
+        }
+
+        return c.json({ success: false, message: '无效的操作' }, 400);
+
+    } catch (error: any) {
+        console.error(`Batch action '${action}' failed for group '${groupId}':`, error);
+        return c.json({ success: false, message: `操作失败: ${error.message}` }, 500);
+    }
+});
+
 nodes.post('/update-order', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const { nodeIds } = await c.req.json<{ nodeIds: string[] }>();
@@ -121,7 +216,7 @@ nodes.post('/update-order', manualAuthMiddleware, async (c) => {
 nodes.post('/batch-import', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     // The body can now contain either `links` (string) or `nodes` (array of objects)
-    const body = await c.req.json<{ links?: string; nodes?: ParsedNode[] }>();
+    const body = await c.req.json<{ links?: string; nodes?: ParsedNode[]; groupId?: string }>();
 
     let nodesToImport: ParsedNode[] = [];
 
@@ -139,6 +234,8 @@ nodes.post('/batch-import', manualAuthMiddleware, async (c) => {
 
     const now = new Date().toISOString();
 
+    const groupId = body.groupId || null;
+
     const stmts = nodesToImport.map(node => {
         const id = crypto.randomUUID();
         const protocol = node.protocol || 'unknown';
@@ -148,9 +245,9 @@ nodes.post('/batch-import', manualAuthMiddleware, async (c) => {
         const link = node.link || node.raw || '';
 
         return c.env.DB.prepare(
-            `INSERT INTO nodes (id, user_id, name, link, protocol, protocol_params, server, port, type, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).bind(id, user.id, name, link, protocol, JSON.stringify(node.protocol_params || {}), server, port, protocol, now, now);
+            `INSERT INTO nodes (id, user_id, group_id, name, link, protocol, protocol_params, server, port, type, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(id, user.id, groupId, name, link, protocol, JSON.stringify(node.protocol_params || {}), server, port, protocol, now, now);
     });
 
     if (stmts.length > 0) {
