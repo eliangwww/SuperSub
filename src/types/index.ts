@@ -61,14 +61,17 @@ export interface Profile {
   user_id: string;
   name: string;
   alias?: string;
-  description?: string;
-  template_variables?: string;
   content?: string; // The raw JSON string from the DB
   
-  // Revert to simple subscription IDs
-  subscription_ids: string[];
-  nodeIds?: string[];
-  node_ids?: string[]; // Add snake_case version from API
+  // Data sources
+  subscription_ids?: string[];
+  node_ids?: string[];
+
+  // Node processing
+  node_prefix_settings?: {
+    enable_subscription_prefix?: boolean;
+    manual_node_prefix?: string;
+  };
 
   // Generation mode fields
   generation_mode?: 'local' | 'online';

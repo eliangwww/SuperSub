@@ -2,14 +2,15 @@ import { Hono } from 'hono';
 import type { Env } from '../utils/types';
 import { manualAuthMiddleware } from '../middleware/auth';
 import { parseNodeLinks, ParsedNode } from '../../../src/utils/nodeParser';
-import { applySubscriptionRules, parseSubscriptionContent, userAgents } from './subscriptions'; // Assuming these are exported from subscriptions.ts
+import { applySubscriptionRules, parseSubscriptionContent, userAgents } from './subscriptions';
 
 const profiles = new Hono<{ Bindings: Env }>();
 
 // This is a public endpoint, no auth on this specific route
-profiles.get('/:id/subscribe', async (c) => {
-    const { id } = c.req.param();
-    const profile = await c.env.DB.prepare('SELECT * FROM profiles WHERE id = ?').bind(id).first<any>();
+profiles.get('/:identifier/subscribe', async (c) => {
+    const { identifier } = c.req.param();
+    
+    const profile = await c.env.DB.prepare('SELECT * FROM profiles WHERE id = ? OR alias = ?').bind(identifier, identifier).first<any>();
 
     if (!profile) {
         return c.text('Profile not found', 404);
@@ -19,12 +20,11 @@ profiles.get('/:id/subscribe', async (c) => {
         const content = JSON.parse(profile.content || '{}');
         const userId = profile.user_id;
 
-        let allNodes: (ParsedNode & { id: string; raw: string; })[] = [];
+        let allNodes: any[] = [];
 
-        // 1. Fetch nodes from subscriptions
         if (content.subscription_ids && content.subscription_ids.length > 0) {
             const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
-            const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; url: string; }>();
+            const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
 
             for (const sub of subscriptions) {
                 try {
@@ -33,12 +33,12 @@ profiles.get('/:id/subscribe', async (c) => {
                         const subContent = await response.text();
                         let nodes = parseSubscriptionContent(subContent);
 
-                        // Apply rules for this specific subscription
                         const { results: rules } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
                         if (rules && rules.length > 0) {
                             nodes = applySubscriptionRules(nodes, rules);
                         }
-                        allNodes.push(...nodes);
+                        const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
+                        allNodes.push(...nodesWithSubName);
                     }
                 } catch (e) {
                     console.error(`Failed to process subscription ${sub.id}:`, e);
@@ -46,10 +46,9 @@ profiles.get('/:id/subscribe', async (c) => {
             }
         }
 
-        // 2. Fetch manually added nodes
-        if (content.nodeIds && content.nodeIds.length > 0) {
-            const nodePlaceholders = content.nodeIds.map(() => '?').join(',');
-            const { results: manualNodes } = await c.env.DB.prepare(`SELECT * FROM nodes WHERE id IN (${nodePlaceholders}) AND user_id = ?`).bind(...content.nodeIds, userId).all<any>();
+        if (content.node_ids && content.node_ids.length > 0) {
+            const nodePlaceholders = content.node_ids.map(() => '?').join(',');
+            const { results: manualNodes } = await c.env.DB.prepare(`SELECT * FROM nodes WHERE id IN (${nodePlaceholders}) AND user_id = ?`).bind(...content.node_ids, userId).all<any>();
             
             const parsedManualNodes = manualNodes.map(n => ({
                 id: n.id,
@@ -61,14 +60,27 @@ profiles.get('/:id/subscribe', async (c) => {
                 link: n.link,
                 raw: n.link,
             }));
-            allNodes.push(...parsedManualNodes);
+            const taggedManualNodes = parsedManualNodes.map(node => ({ ...node, isManual: true }));
+            allNodes.push(...taggedManualNodes);
         }
 
         if (allNodes.length === 0) {
             return c.text('No nodes found for this profile.', 404);
         }
 
-        // 3. Generate final config
+        const prefixSettings = content.node_prefix_settings || {};
+        if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix) {
+            allNodes = allNodes.map(node => {
+                if (prefixSettings.enable_subscription_prefix && node.subscriptionName) {
+                    return { ...node, name: `${node.subscriptionName} - ${node.name}` };
+                }
+                if (prefixSettings.manual_node_prefix && node.isManual) {
+                    return { ...node, name: `${prefixSettings.manual_node_prefix} - ${node.name}` };
+                }
+                return node;
+            });
+        }
+
         if (content.generation_mode === 'online') {
             const backend = await c.env.DB.prepare("SELECT url FROM subconverter_assets WHERE id = ?").bind(content.subconverter_backend_id).first<{ url: string }>();
             const config = await c.env.DB.prepare("SELECT url FROM subconverter_assets WHERE id = ?").bind(content.subconverter_config_id).first<{ url: string }>();
@@ -77,16 +89,26 @@ profiles.get('/:id/subscribe', async (c) => {
                 return c.text('Subconverter backend or config not found.', 500);
             }
 
-            // Convert nodes to a format subconverter can understand (e.g., base64 encoded list of links)
+            const userAgent = c.req.header('User-Agent') || '';
+            const { results: uaMappings } = await c.env.DB.prepare('SELECT ua_keyword, client_type FROM ua_mappings WHERE is_enabled = 1').all<{ ua_keyword: string; client_type: string; }>();
+            
+            let targetClient = 'clash';
+            for (const mapping of uaMappings) {
+                if (userAgent.toLowerCase().includes(mapping.ua_keyword.toLowerCase())) {
+                    targetClient = mapping.client_type;
+                    break;
+                }
+            }
+
             const nodeLinks = allNodes.map(n => n.link || n.raw).filter(Boolean).join('\n');
             const encodedNodes = btoa(nodeLinks);
 
             const targetUrl = new URL(`${backend.url}/sub`);
-            targetUrl.searchParams.set('target', 'clash'); // Target is now determined by the config, but we set a default
+            targetUrl.searchParams.set('target', targetClient);
             targetUrl.searchParams.set('url', `data:text/plain;base64,${encodedNodes}`);
             targetUrl.searchParams.set('config', config.url);
 
-            const subResponse = await fetch(targetUrl.toString(), { headers: { 'User-Agent': 'Clash' } });
+            const subResponse = await fetch(targetUrl.toString(), { headers: { 'User-Agent': userAgent } });
             if (!subResponse.ok) {
                 return c.text(`Failed to generate from subconverter: ${await subResponse.text()}`, 502);
             }
@@ -94,21 +116,19 @@ profiles.get('/:id/subscribe', async (c) => {
             return c.text(finalConfig);
 
         } else {
-            // Local generation (currently placeholder)
             return c.text(JSON.stringify(allNodes, null, 2));
         }
 
     } catch (e: any) {
-        console.error(`Error generating profile ${id}:`, e);
+        console.error(`Error generating profile ${identifier}:`, e);
         return c.text(`Internal server error: ${e.message}`, 500);
     }
 });
 
 
-// All other routes in this group require auth
+// All other routes below this line require auth
 profiles.use('*', manualAuthMiddleware);
 
-// New route for previewing nodes in a profile
 profiles.get('/:id/preview-nodes', async (c) => {
     const user = c.get('jwtPayload');
     const { id } = c.req.param();
@@ -122,12 +142,11 @@ profiles.get('/:id/preview-nodes', async (c) => {
         const content = JSON.parse(profile.content || '{}');
         const userId = profile.user_id;
 
-        let allNodes: (ParsedNode & { id: string; raw: string; })[] = [];
+        let allNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; })[] = [];
 
-        // 1. Fetch nodes from subscriptions
         if (content.subscription_ids && content.subscription_ids.length > 0) {
             const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
-            const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; url: string; }>();
+            const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
 
             for (const sub of subscriptions) {
                 try {
@@ -140,18 +159,18 @@ profiles.get('/:id/preview-nodes', async (c) => {
                         if (rules && rules.length > 0) {
                             nodes = applySubscriptionRules(nodes, rules);
                         }
-                        allNodes.push(...nodes);
+                        const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
+                        allNodes.push(...nodesWithSubName);
                     }
                 } catch (e) {
-                    console.error(`Failed to process subscription ${sub.id}:`, e);
+                    // console.error(`Failed to process subscription ${sub.id}:`, e);
                 }
             }
         }
 
-        // 2. Fetch manually added nodes
-        if (content.nodeIds && content.nodeIds.length > 0) {
-            const nodePlaceholders = content.nodeIds.map(() => '?').join(',');
-            const { results: manualNodes } = await c.env.DB.prepare(`SELECT * FROM nodes WHERE id IN (${nodePlaceholders}) AND user_id = ?`).bind(...content.nodeIds, userId).all<any>();
+        if (content.node_ids && content.node_ids.length > 0) {
+            const nodePlaceholders = content.node_ids.map(() => '?').join(',');
+            const { results: manualNodes } = await c.env.DB.prepare(`SELECT * FROM nodes WHERE id IN (${nodePlaceholders}) AND user_id = ?`).bind(...content.node_ids, userId).all<any>();
             
             const parsedManualNodes = manualNodes.map(n => ({
                 id: n.id,
@@ -163,10 +182,23 @@ profiles.get('/:id/preview-nodes', async (c) => {
                 link: n.link,
                 raw: n.link,
             }));
-            allNodes.push(...parsedManualNodes);
+            const taggedManualNodes = parsedManualNodes.map(node => ({ ...node, isManual: true }));
+            allNodes.push(...taggedManualNodes);
         }
 
-        // 3. Analyze the final node list
+        const prefixSettings = content.node_prefix_settings || {};
+        if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix) {
+            allNodes = allNodes.map(node => {
+                if (prefixSettings.enable_subscription_prefix && node.subscriptionName) {
+                    return { ...node, name: `${node.subscriptionName} - ${node.name}` };
+                }
+                if (prefixSettings.manual_node_prefix && node.isManual) {
+                    return { ...node, name: `${prefixSettings.manual_node_prefix} - ${node.name}` };
+                }
+                return node;
+            });
+        }
+        
         const analysis = {
             total: allNodes.length,
             protocols: allNodes.reduce((acc, node) => {
@@ -185,7 +217,7 @@ profiles.get('/:id/preview-nodes', async (c) => {
         return c.json({ success: true, data: { nodes: allNodes, analysis: analysis } });
 
     } catch (e: any) {
-        console.error(`Error generating profile preview for ${id}:`, e);
+        // console.error(`Error generating profile preview for ${id}:`, e);
         return c.json({ success: false, message: `Internal server error: ${e.message}` }, 500);
     }
 });
@@ -194,15 +226,12 @@ profiles.get('/', async (c) => {
     const user = c.get('jwtPayload');
     const { results } = await c.env.DB.prepare('SELECT * FROM profiles WHERE user_id = ?').bind(user.id).all<any>();
     
-    // Expand the 'content' JSON field into the main object
     const expandedResults = results.map(profile => {
         try {
             const content = JSON.parse(profile.content || '{}');
-            // Merge content properties, but let DB columns like id and name take precedence
             return { ...content, ...profile };
         } catch (e) {
             console.error(`Failed to parse content for profile ${profile.id}:`, e);
-            // Return the profile as-is if content is invalid
             return profile;
         }
     });
@@ -220,22 +249,43 @@ profiles.post('/', async (c) => {
         return c.json({ success: false, message: 'Profile name is required.' }, 400);
     }
 
-    // Ensure content is a string, default to an empty JSON object if not provided.
-    const content = typeof body.content === 'string' ? body.content : '{}';
+    // Explicitly separate top-level fields from content fields
+    const name = body.name.trim();
+    const alias = body.alias || null;
+    const content = JSON.parse(body.content || '{}');
+
+    // Rebuild a clean content payload, excluding any top-level fields
+    const contentPayload = {
+        subscription_ids: content.subscription_ids,
+        node_ids: content.node_ids,
+        node_prefix_settings: content.node_prefix_settings,
+        subconverter_backend_id: content.subconverter_backend_id,
+        subconverter_config_id: content.subconverter_config_id,
+        generation_mode: 'online',
+    };
 
     await c.env.DB.prepare(
-        `INSERT INTO profiles (id, user_id, name, content, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
-    ).bind(id, user.id, body.name.trim(), content, now, now).run();
+        `INSERT INTO profiles (id, user_id, name, alias, content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, user.id, name, alias, JSON.stringify(contentPayload), now, now).run();
+    
     return c.json({ success: true, data: { id } }, 201);
 });
 
 profiles.get('/:id', async (c) => {
     const user = c.get('jwtPayload');
     const { id } = c.req.param();
-    const profile = await c.env.DB.prepare('SELECT * FROM profiles WHERE id = ? AND user_id = ?').bind(id, user.id).first();
+    const profile: any = await c.env.DB.prepare('SELECT * FROM profiles WHERE id = ? AND user_id = ?').bind(id, user.id).first();
     if (!profile) return c.json({ success: false, message: 'Profile not found' }, 404);
-    return c.json({ success: true, data: profile });
+
+    try {
+        const content = JSON.parse(profile.content || '{}');
+        const expandedProfile = { ...content, ...profile };
+        return c.json({ success: true, data: expandedProfile });
+    } catch (e) {
+        console.error(`Failed to parse content for profile ${id}:`, e);
+        return c.json({ success: true, data: profile });
+    }
 });
 
 profiles.put('/:id', async (c) => {
@@ -247,13 +297,27 @@ profiles.put('/:id', async (c) => {
     if (!body.name || typeof body.name !== 'string' || body.name.trim() === '') {
         return c.json({ success: false, message: 'Profile name is required.' }, 400);
     }
-    
-    const content = typeof body.content === 'string' ? body.content : '{}';
+
+    // Explicitly separate top-level fields from content fields
+    const name = body.name.trim();
+    const alias = body.alias || null;
+    const content = JSON.parse(body.content || '{}');
+
+    // Rebuild a clean content payload, excluding any top-level fields
+    const contentPayload = {
+        subscription_ids: content.subscription_ids,
+        node_ids: content.node_ids,
+        node_prefix_settings: content.node_prefix_settings,
+        subconverter_backend_id: content.subconverter_backend_id,
+        subconverter_config_id: content.subconverter_config_id,
+        generation_mode: 'online',
+    };
 
     await c.env.DB.prepare(
-        `UPDATE profiles SET name = ?, content = ?, updated_at = ?
+        `UPDATE profiles SET name = ?, alias = ?, content = ?, updated_at = ?
          WHERE id = ? AND user_id = ?`
-    ).bind(body.name.trim(), content, now, id, user.id).run();
+    ).bind(name, alias, JSON.stringify(contentPayload), now, id, user.id).run();
+    
     return c.json({ success: true });
 });
 
@@ -263,5 +327,7 @@ profiles.delete('/:id', async (c) => {
     await c.env.DB.prepare('DELETE FROM profiles WHERE id = ? AND user_id = ?').bind(id, user.id).run();
     return c.json({ success: true });
 });
+
+// All other routes below this line require auth
 
 export default profiles;

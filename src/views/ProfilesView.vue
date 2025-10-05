@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, computed, h } from 'vue';
 import axios from 'axios';
-import { useRouter } from 'vue-router';
-import { useMessage, useDialog, NButton, NSpace, NCode, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NSpin, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar } from 'naive-ui';
+import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NSpin, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar, NTabs, NTabPane, NCollapse, NCollapseItem, NSwitch } from 'naive-ui';
 import type { DataTableColumns, FormInst } from 'naive-ui';
 import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon } from '@vicons/ionicons5';
 import { api } from '@/utils/api';
@@ -10,12 +9,11 @@ import type { ApiResponse, Profile, Subscription, Node } from '@/types';
 
 const message = useMessage();
 const dialog = useDialog();
-const router = useRouter();
 
 const profiles = ref<Profile[]>([]);
 const loading = ref(true);
 const allSubscriptions = ref<Subscription[]>([]);
-const allNodes = ref<Node[]>([]);
+const allManualNodes = ref<Record<string, { id: string; name: string }[]>>({});
 const allBackends = ref<any[]>([]);
 const allConfigs = ref<any[]>([]);
 
@@ -25,25 +23,23 @@ const saveLoading = ref(false);
 const editingProfile = ref<Profile | null>(null);
 const formRef = ref<FormInst | null>(null);
 
-const formState = reactive({
+const defaultFormState = () => ({
   id: '',
   name: '',
-  description: '',
-alias: '',
-  // generation_mode is now fixed to 'online'
-  generation_mode: 'online' as 'local' | 'online',
+  alias: '',
+  subscription_ids: [] as string[],
+  node_ids: [] as string[],
+  node_prefix_settings: {
+    enable_subscription_prefix: false,
+    manual_node_prefix: '',
+  },
   subconverter_backend_id: null as number | null,
   subconverter_config_id: null as number | null,
-  subscription_ids: [] as string[],
-  nodeIds: [] as string[],
 });
 
-// For the original text preview modal (which we are replacing)
-// const showPreviewModal = ref(false);
-// const previewContent = ref('');
-// const loadingPreview = ref(false);
+const formState = reactive(defaultFormState());
 
-// For the new Nodes Preview Modal
+// For Nodes Preview Modal
 const showNodesPreviewModal = ref(false);
 const loadingNodesPreview = ref(false);
 const currentProfileForPreview = ref<Profile | null>(null);
@@ -56,85 +52,43 @@ const nodesPreviewData = ref<{
   };
 } | null>(null);
 
-
-// For custom multi-select
+// For custom multi-select filtering
 const subFilter = ref('');
 const nodeFilter = ref('');
 
+const subscriptionOptions = computed(() => allSubscriptions.value.map(s => ({ label: s.name, value: s.id })));
+
 const filteredSubscriptionOptions = computed(() => {
-  if (!subFilter.value) {
-    return subscriptionOptions.value;
-  }
+  if (!subFilter.value) return subscriptionOptions.value;
   return subscriptionOptions.value.filter(opt => opt.label.toLowerCase().includes(subFilter.value.toLowerCase()));
 });
 
-const filteredNodeOptions = computed(() => {
-  if (!nodeFilter.value) {
-    return nodeOptions.value;
-  }
-  return nodeOptions.value.filter(opt => opt.label.toLowerCase().includes(nodeFilter.value.toLowerCase()));
-});
-
-// --- Select All Logic ---
-const isAllSubsSelected = computed(() => {
-  const filteredIds = new Set(filteredSubscriptionOptions.value.map(opt => opt.value));
-  return filteredSubscriptionOptions.value.length > 0 && [...filteredIds].every(id => formState.subscription_ids.includes(id));
-});
-
-const isAllNodesSelected = computed(() => {
-  const filteredIds = new Set(filteredNodeOptions.value.map(opt => opt.value));
-  return filteredNodeOptions.value.length > 0 && [...filteredIds].every(id => formState.nodeIds.includes(id));
-});
-
-const isSubsIndeterminate = computed(() => {
-  const filteredIds = new Set(filteredSubscriptionOptions.value.map(opt => opt.value));
-  const selectedCount = formState.subscription_ids.filter(id => filteredIds.has(id)).length;
-  return selectedCount > 0 && selectedCount < filteredIds.size;
-});
-
-const isNodesIndeterminate = computed(() => {
-  const filteredIds = new Set(filteredNodeOptions.value.map(opt => opt.value));
-  const selectedCount = formState.nodeIds.filter(id => filteredIds.has(id)).length;
-  return selectedCount > 0 && selectedCount < filteredIds.size;
-});
-
-const handleSelectAllSubs = (checked: boolean) => {
-  const filteredIds = filteredSubscriptionOptions.value.map(opt => opt.value);
+const handleGroupSelectAll = (group: { id: string; name: string }[], checked: boolean) => {
+  const groupNodeIds = group.map(node => node.id);
   if (checked) {
-    // Add only filtered items to selection, avoiding duplicates
-    const newIds = new Set([...formState.subscription_ids, ...filteredIds]);
-    formState.subscription_ids = Array.from(newIds);
+    formState.node_ids = [...new Set([...formState.node_ids, ...groupNodeIds])];
   } else {
-    // Remove only filtered items from selection
-    formState.subscription_ids = formState.subscription_ids.filter(id => !filteredIds.includes(id));
+    formState.node_ids = formState.node_ids.filter(id => !groupNodeIds.includes(id));
   }
 };
 
-const handleSelectAllNodes = (checked: boolean) => {
-  const filteredIds = filteredNodeOptions.value.map(opt => opt.value);
-  if (checked) {
-    const newIds = new Set([...formState.nodeIds, ...filteredIds]);
-    formState.nodeIds = Array.from(newIds);
-  } else {
-    formState.nodeIds = formState.nodeIds.filter(id => !filteredIds.includes(id));
-  }
+const isGroupSelected = (group: { id: string; name: string }[]) => {
+  const groupNodeIds = new Set(group.map(node => node.id));
+  return group.length > 0 && [...groupNodeIds].every(id => formState.node_ids.includes(id));
 };
+
+const isGroupIndeterminate = (group: { id: string; name: string }[]) => {
+  const groupNodeIds = new Set(group.map(node => node.id));
+  const selectedCount = formState.node_ids.filter(id => groupNodeIds.has(id)).length;
+  return selectedCount > 0 && selectedCount < groupNodeIds.size;
+};
+
 
 const rules = {
-  name: {
-    required: true,
-    message: '请输入名称',
-    trigger: ['input', 'blur'],
-  },
+  name: { required: true, message: '请输入名称', trigger: ['input', 'blur'] },
 };
 
-// For Logs Modal
-
 const modalTitle = computed(() => (editingProfile.value ? '编辑配置' : '新增配置'));
-
-
-const subscriptionOptions = computed(() => allSubscriptions.value.map(s => ({ label: s.name, value: s.id })));
-const nodeOptions = computed(() => allNodes.value.map(n => ({ label: n.name, value: n.id })));
 
 const previewNodeColumns: DataTableColumns<Partial<Node>> = [
   { title: '节点名称', key: 'name', ellipsis: { tooltip: true } },
@@ -146,19 +100,15 @@ const previewNodeColumns: DataTableColumns<Partial<Node>> = [
 const backendOptions = computed(() => allBackends.value.map(b => ({ label: b.name, value: b.id })));
 const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name, value: c.id })));
 
-
 const generatedUrl = computed(() => {
-  if (formState.alias) {
-    return `${window.location.origin}/sub/${formState.alias}`;
-  }
+  if (formState.alias) return `${window.location.origin}/api/profiles/${formState.alias}/subscribe`;
+  if (formState.id) return `${window.location.origin}/api/profiles/${formState.id}/subscribe`;
   return '';
 });
 
 const copyGeneratedUrl = () => {
   if (generatedUrl.value) {
-    navigator.clipboard.writeText(generatedUrl.value).then(() => {
-      message.success('链接已复制');
-    });
+    navigator.clipboard.writeText(generatedUrl.value).then(() => message.success('链接已复制'));
   }
 };
 
@@ -170,38 +120,15 @@ const createColumns = ({ onCopy, onPreview, onEdit, onDelete }: {
 }): DataTableColumns<Profile> => {
   return [
     { title: '名称', key: 'name', sorter: 'default', width: 200 },
-    { title: '描述', key: 'description', ellipsis: { tooltip: true } },
     {
       title: '订阅链接',
       key: 'alias',
       render(row) {
-        let alias = row.alias;
-        try {
-          if (row.content) {
-            const contentData = JSON.parse(row.content);
-            if (contentData.alias) {
-              alias = contentData.alias;
-            }
-          }
-        } catch (e) {
-          // Ignore parsing errors
-        }
-
-        const url = alias
-          ? `${window.location.origin}/sub/${alias}`
-          : `${window.location.origin}/api/profiles/${row.id}/generate`;
+        const url = row.alias
+          ? `${window.location.origin}/api/profiles/${row.alias}/subscribe`
+          : `${window.location.origin}/api/profiles/${row.id}/subscribe`;
         
-        if (!alias) {
-            return h('span', { style: 'color: #999; font-style: italic;' }, '无别名，使用ID生成');
-        }
-
-        return h(NButton, {
-          text: true,
-          tag: 'a',
-          href: url,
-          target: '_blank',
-          type: 'primary',
-        }, { default: () => url });
+        return h(NButton, { text: true, tag: 'a', href: url, target: '_blank', type: 'primary' }, { default: () => url });
       }
     },
     {
@@ -223,49 +150,57 @@ const createColumns = ({ onCopy, onPreview, onEdit, onDelete }: {
 };
 
 const openEditModal = async (profile: Profile | null = null) => {
-  // Fetch all available sources first
   await fetchAllSources();
+  // Reset form state to default
+  Object.assign(formState, defaultFormState());
 
   if (profile) {
+    // Editing an existing profile
     editingProfile.value = profile;
-    
-    // Safely parse the content field
-    let contentData = { alias: '', description: '', subconverter_backend_id: null, subconverter_config_id: null, subscription_ids: [], nodeIds: [] };
-    try {
-      if (profile.content) {
-        contentData = { ...contentData, ...JSON.parse(profile.content) };
-      }
-    } catch (e) {
-      console.error("Failed to parse profile content:", e);
-    }
-
-    // The profile object is now expanded on the backend, so we can access properties directly.
     formState.id = profile.id;
     formState.name = profile.name;
-    formState.description = contentData.description || profile.description || '';
-    formState.alias = contentData.alias || profile.alias || '';
-    formState.generation_mode = 'online'; // Always online
-    formState.subconverter_backend_id = contentData.subconverter_backend_id || profile.subconverter_backend_id || null;
-    formState.subconverter_config_id = contentData.subconverter_config_id || profile.subconverter_config_id || null;
-    formState.subscription_ids = contentData.subscription_ids || profile.subscription_ids || [];
-    formState.nodeIds = contentData.nodeIds || profile.nodeIds || [];
+    formState.alias = profile.alias || '';
 
+    // Parse content if it exists
+    if (profile.content) {
+      try {
+        const content = JSON.parse(profile.content);
+        formState.subscription_ids = content.subscription_ids || [];
+        formState.node_ids = content.node_ids || [];
+        formState.node_prefix_settings = {
+          ...defaultFormState().node_prefix_settings,
+          ...content.node_prefix_settings
+        };
+        formState.subconverter_backend_id = content.subconverter_backend_id || null;
+        formState.subconverter_config_id = content.subconverter_config_id || null;
+      } catch (e) {
+        message.error('解析配置内容失败，将使用默认值。');
+        // In case of parsing error, fall back to defaults for content-related fields
+        formState.subscription_ids = [];
+        formState.node_ids = [];
+        formState.node_prefix_settings = { ...defaultFormState().node_prefix_settings };
+        formState.subconverter_backend_id = null;
+        formState.subconverter_config_id = null;
+      }
+    } else {
+      // Fallback for profiles that might not have the content field populated
+      formState.subscription_ids = profile.subscription_ids || [];
+      formState.node_ids = profile.node_ids || [];
+      formState.node_prefix_settings = {
+        ...defaultFormState().node_prefix_settings,
+        ...profile.node_prefix_settings
+      };
+      formState.subconverter_backend_id = profile.subconverter_backend_id || null;
+      formState.subconverter_config_id = profile.subconverter_config_id || null;
+    }
   } else {
+    // Creating a new profile
     editingProfile.value = null;
-    formState.id = '';
-    formState.name = '';
-    formState.description = '';
-    formState.alias = '';
-    formState.generation_mode = 'online';
-    
-    // Auto-select default backend and config
+    // Set default backend and config for new profiles
     const defaultBackend = allBackends.value.find(b => b.is_default);
     const defaultConfig = allConfigs.value.find(c => c.is_default);
     formState.subconverter_backend_id = defaultBackend ? defaultBackend.id : null;
     formState.subconverter_config_id = defaultConfig ? defaultConfig.id : null;
-
-    formState.subscription_ids = [];
-    formState.nodeIds = [];
   }
   showEditModal.value = true;
 };
@@ -274,15 +209,13 @@ const fetchProfiles = async () => {
   loading.value = true;
   try {
     const response = await api.get<ApiResponse<Profile[]>>('/profiles');
-    if (response.data.success && response.data.data) {
-      profiles.value = response.data.data;
+    if (response.data.success) {
+      profiles.value = response.data.data || [];
     } else {
       message.error(response.data.message || '获取配置列表失败');
     }
   } catch (err: any) {
-    if (!axios.isCancel(err)) {
-      message.error(err.message || '请求失败，请稍后重试');
-    }
+    if (!axios.isCancel(err)) message.error(err.message || '请求失败');
   } finally {
     loading.value = false;
   }
@@ -292,23 +225,17 @@ const fetchAllSources = async () => {
   try {
     const [subsRes, nodesRes, assetsRes] = await Promise.all([
       api.get<ApiResponse<Subscription[]>>('/subscriptions'),
-      api.get<ApiResponse<Node[]>>('/nodes'),
+      api.get<ApiResponse<Record<string, any[]>>>('/nodes/grouped'),
       api.get<ApiResponse<any[]>>('/subconverter-assets'),
     ]);
-    if (subsRes.data.success && subsRes.data.data) {
-      allSubscriptions.value = subsRes.data.data;
-    }
-    if (nodesRes.data.success && nodesRes.data.data) {
-      allNodes.value = nodesRes.data.data;
-    }
-    if (assetsRes.data.success && assetsRes.data.data) {
-      allBackends.value = assetsRes.data.data.filter((a: any) => a.type === 'backend');
-      allConfigs.value = assetsRes.data.data.filter((a: any) => a.type === 'config');
+    if (subsRes.data.success) allSubscriptions.value = subsRes.data.data || [];
+    if (nodesRes.data.success) allManualNodes.value = nodesRes.data.data || {};
+    if (assetsRes.data.success) {
+      allBackends.value = assetsRes.data.data?.filter((a: any) => a.type === 'backend') || [];
+      allConfigs.value = assetsRes.data.data?.filter((a: any) => a.type === 'config') || [];
     }
   } catch (err: any) {
-    if (!axios.isCancel(err)) {
-      message.error("获取订阅、节点、模板或转换资源列表失败");
-    }
+    if (!axios.isCancel(err)) message.error("获取订阅、节点或模板资源失败");
   }
 };
 
@@ -320,21 +247,21 @@ const handleSave = async () => {
     }
     saveLoading.value = true;
     try {
-      // Consolidate all profile settings into a single 'content' object
+      // Explicitly build the content payload, ensuring all fields are included.
       const contentPayload = {
-        description: formState.description,
-        alias: formState.alias || null,
-        generation_mode: 'online', // Hardcoded to online
+        subscription_ids: formState.subscription_ids,
+        node_ids: formState.node_ids,
+        node_prefix_settings: formState.node_prefix_settings,
         subconverter_backend_id: formState.subconverter_backend_id,
         subconverter_config_id: formState.subconverter_config_id,
-        subscription_ids: formState.subscription_ids,
-        nodeIds: formState.nodeIds,
+        generation_mode: 'online',
       };
 
-      // The final payload sent to the backend
+      // Explicitly build the top-level payload.
       const payload = {
         name: formState.name,
-        content: JSON.stringify(contentPayload), // All details are in 'content'
+        alias: formState.alias || null,
+        content: JSON.stringify(contentPayload),
       };
 
       const response = editingProfile.value
@@ -344,13 +271,14 @@ const handleSave = async () => {
       if (response.data.success) {
         message.success(editingProfile.value ? '配置更新成功' : '配置新增成功');
         showEditModal.value = false;
-        fetchProfiles();
+        await fetchProfiles(); // Use await to ensure list is updated before user sees it
       } else {
         message.error(response.data.message || '保存失败');
       }
     } catch (err: any) {
       if (!axios.isCancel(err)) {
-        message.error(err.message || '请求失败，请稍后重试');
+        const errorMsg = err.response?.data?.message || err.message || '请求失败';
+        message.error(errorMsg);
       }
     } finally {
       saveLoading.value = false;
@@ -374,36 +302,17 @@ const handleDelete = (row: Profile) => {
           message.error(response.data.message || '删除失败');
         }
       } catch (err: any) {
-        if (!axios.isCancel(err)) {
-          message.error(err.message || '请求失败，请稍后重试');
-        }
+        if (!axios.isCancel(err)) message.error(err.message || '请求失败');
       }
     },
   });
 };
 
 const handleCopyLink = (row: Profile) => {
-  let alias = row.alias;
-  try {
-    if (row.content) {
-      const contentData = JSON.parse(row.content);
-      if (contentData.alias) {
-        alias = contentData.alias;
-      }
-    }
-  } catch (e) {
-    // Ignore parsing errors
-  }
-
-  const url = alias
-    ? `${window.location.origin}/sub/${alias}`
-    : `${window.location.origin}/api/profiles/${row.id}/generate`;
-  
-  navigator.clipboard.writeText(url).then(() => {
-    message.success('链接已复制到剪贴板');
-  }, () => {
-    message.error('复制失败');
-  });
+  const url = row.alias
+    ? `${window.location.origin}/api/profiles/${row.alias}/subscribe`
+    : `${window.location.origin}/api/profiles/${row.id}/subscribe`;
+  navigator.clipboard.writeText(url).then(() => message.success('链接已复制'), () => message.error('复制失败'));
 };
 
 const onPreview = async (row: Profile) => {
@@ -413,8 +322,10 @@ const onPreview = async (row: Profile) => {
   showNodesPreviewModal.value = true;
   try {
     const response = await api.get<ApiResponse<typeof nodesPreviewData.value>>(`/profiles/${row.id}/preview-nodes`);
-    if (response.data.success && response.data.data) {
-      nodesPreviewData.value = response.data.data;
+    if (response.data.success) {
+      if (response.data.data) {
+        nodesPreviewData.value = response.data.data;
+      }
     } else {
       message.error(response.data.message || '加载预览失败');
       showNodesPreviewModal.value = false;
@@ -429,12 +340,7 @@ const onPreview = async (row: Profile) => {
   }
 };
 
-const columns = createColumns({
-    onCopy: handleCopyLink,
-    onPreview: onPreview,
-    onEdit: openEditModal,
-    onDelete: handleDelete,
-});
+const columns = createColumns({ onCopy: handleCopyLink, onPreview, onEdit: openEditModal, onDelete: handleDelete });
 
 onMounted(fetchProfiles);
 
@@ -451,83 +357,44 @@ onMounted(fetchProfiles);
       </template>
     </n-page-header>
 
-    <n-data-table
-      :columns="columns"
-      :data="profiles"
-      :loading="loading"
-      :pagination="{ pageSize: 10 }"
-      :bordered="false"
-      class="mt-4"
-    />
+    <n-data-table :columns="columns" :data="profiles" :loading="loading" :pagination="{ pageSize: 10 }" :bordered="false" class="mt-4" />
 
     <!-- Edit/Add Modal -->
-    <n-modal
-      v-model:show="showEditModal"
-      preset="card"
-      :title="modalTitle"
-      style="width: 1000px;"
-      class="profile-builder-modal"
-    >
+    <n-modal v-model:show="showEditModal" preset="card" :title="modalTitle" style="width: 1000px;" :trap-focus="false">
       <n-form ref="formRef" :model="formState" :rules="rules">
+        <!-- Region 1: Core Definition -->
+        <n-divider title-placement="left">核心定义</n-divider>
         <n-grid :cols="2" :x-gap="24">
-          <!-- Left Column -->
           <n-gi>
-            <n-divider title-placement="left">基本信息</n-divider>
-            <n-form-item label="名称" path="name">
+            <n-form-item label="配置名称" path="name">
               <n-input v-model:value="formState.name" />
             </n-form-item>
-            <n-form-item label="描述">
-              <n-input v-model:value="formState.description" />
-            </n-form-item>
+          </n-gi>
+          <n-gi>
             <n-form-item label="链接别名">
               <n-input v-model:value="formState.alias" placeholder="例如 my-clash-config" />
             </n-form-item>
-            <n-form-item v-if="formState.alias" label="生成链接">
-                <n-input :value="generatedUrl" readonly>
-                  <template #suffix>
-                    <n-button text @click="copyGeneratedUrl">
-                      <n-icon :component="CopyIcon" />
-                    </n-button>
-                  </template>
-                </n-input>
-            </n-form-item>
-
-            <n-divider title-placement="left">生成设置 (在线转换)</n-divider>
-             <n-form-item label="转换后端">
-              <n-select
-                v-model:value="formState.subconverter_backend_id"
-                :options="backendOptions"
-                placeholder="留空则使用全局默认后端"
-                clearable
-              />
-            </n-form-item>
-            <n-form-item label="转换配置">
-              <n-select
-                v-model:value="formState.subconverter_config_id"
-                :options="configOptions"
-                placeholder="留空则使用全局默认配置"
-                clearable
-              />
-            </n-form-item>
           </n-gi>
+        </n-grid>
+        <n-form-item v-if="generatedUrl" label="生成链接">
+          <n-input :value="generatedUrl" readonly>
+            <template #suffix>
+              <n-button text @click="copyGeneratedUrl">
+                <n-icon :component="CopyIcon" />
+              </n-button>
+            </template>
+          </n-input>
+        </n-form-item>
 
-          <!-- Right Column -->
-          <n-gi>
-            <n-divider title-placement="left">数据源</n-divider>
-            <n-card title="包含的订阅" size="small" :bordered="true" class="mb-4">
+        <!-- Region 2: Data Sources & Processing -->
+        <n-divider title-placement="left">数据源与内容处理</n-divider>
+        <n-tabs type="line" animated>
+          <n-tab-pane name="subscriptions" tab="订阅">
+            <n-card size="small" :bordered="true">
               <template #header-extra>
-                <n-space>
-                  <n-checkbox
-                    :checked="isAllSubsSelected"
-                    :indeterminate="isSubsIndeterminate"
-                    @update:checked="handleSelectAllSubs"
-                  >
-                    全选
-                  </n-checkbox>
-                  <n-input v-model:value="subFilter" size="small" placeholder="筛选" clearable />
-                </n-space>
+                <n-input v-model:value="subFilter" size="small" placeholder="筛选" clearable />
               </template>
-              <n-scrollbar style="max-height: 200px;">
+              <n-scrollbar style="max-height: 300px;">
                 <n-checkbox-group v-model:value="formState.subscription_ids">
                   <n-space vertical>
                     <n-checkbox v-for="sub in filteredSubscriptionOptions" :key="sub.value" :value="sub.value" :label="sub.label" />
@@ -535,28 +402,59 @@ onMounted(fetchProfiles);
                 </n-checkbox-group>
               </n-scrollbar>
             </n-card>
-            
-            <n-card title="包含的节点" size="small" :bordered="true">
-              <template #header-extra>
-                <n-space>
-                  <n-checkbox
-                    :checked="isAllNodesSelected"
-                    :indeterminate="isNodesIndeterminate"
-                    @update:checked="handleSelectAllNodes"
-                  >
-                    全选
-                  </n-checkbox>
-                  <n-input v-model:value="nodeFilter" size="small" placeholder="筛选" clearable />
-                </n-space>
+          </n-tab-pane>
+          <n-tab-pane name="manual-nodes" tab="手工节点">
+            <n-card size="small" :bordered="true">
+               <template #header-extra>
+                <n-input v-model:value="nodeFilter" size="small" placeholder="筛选节点名称" clearable />
               </template>
-              <n-scrollbar style="max-height: 200px;">
-                <n-checkbox-group v-model:value="formState.nodeIds">
-                  <n-space vertical>
-                    <n-checkbox v-for="node in filteredNodeOptions" :key="node.value" :value="node.value" :label="node.label" />
-                  </n-space>
-                </n-checkbox-group>
+              <n-scrollbar style="max-height: 300px;">
+                <n-collapse>
+                  <n-collapse-item v-for="(nodes, groupName) in allManualNodes" :key="groupName" :title="`${groupName} (${nodes.length})`">
+                     <template #header-extra>
+                      <n-checkbox
+                        :checked="isGroupSelected(nodes)"
+                        :indeterminate="isGroupIndeterminate(nodes)"
+                        @update:checked="handleGroupSelectAll(nodes, $event)"
+                        @click.stop
+                      >
+                        全选
+                      </n-checkbox>
+                    </template>
+                    <n-checkbox-group v-model:value="formState.node_ids">
+                      <n-space vertical>
+                        <n-checkbox v-for="node in nodes.filter(n => n.name.toLowerCase().includes(nodeFilter.toLowerCase()))" :key="node.id" :value="node.id" :label="node.name" />
+                      </n-space>
+                    </n-checkbox-group>
+                  </n-collapse-item>
+                </n-collapse>
               </n-scrollbar>
             </n-card>
+          </n-tab-pane>
+          <n-tab-pane name="processing" tab="节点处理">
+             <n-form-item label="机场订阅节点前缀">
+                <n-switch v-model:value="formState.node_prefix_settings.enable_subscription_prefix" />
+                <template #feedback>开启后，来自订阅的节点名称将自动变为 "订阅名称 - 节点名称"。</template>
+            </n-form-item>
+            <n-form-item label="手工节点前缀">
+                <n-input v-model:value="formState.node_prefix_settings.manual_node_prefix" placeholder="例如 MyNodes" clearable />
+                <template #feedback>设置后，所有手工添加的节点名称将变为 "前缀 - 节点名称"。</template>
+            </n-form-item>
+          </n-tab-pane>
+        </n-tabs>
+
+        <!-- Region 3: Output Target -->
+        <n-divider title-placement="left">输出目标</n-divider>
+        <n-grid :cols="2" :x-gap="24">
+          <n-gi>
+            <n-form-item label="转换后端">
+              <n-select v-model:value="formState.subconverter_backend_id" :options="backendOptions" placeholder="留空则使用全局默认后端" clearable />
+            </n-form-item>
+          </n-gi>
+          <n-gi>
+            <n-form-item label="转换配置">
+              <n-select v-model:value="formState.subconverter_config_id" :options="configOptions" placeholder="留空则使用全局默认配置" clearable />
+            </n-form-item>
           </n-gi>
         </n-grid>
       </n-form>
@@ -570,54 +468,32 @@ onMounted(fetchProfiles);
     </n-modal>
 
     <!-- Nodes Preview Modal -->
-    <n-modal
-      v-model:show="showNodesPreviewModal"
-      preset="card"
-      :title="`节点预览 - ${currentProfileForPreview?.name}`"
-      style="width: 800px;"
-      :mask-closable="true"
-    >
+    <n-modal v-model:show="showNodesPreviewModal" preset="card" :title="`节点预览 - ${currentProfileForPreview?.name}`" style="width: 800px;" :mask-closable="true" :trap-focus="false">
       <n-spin :show="loadingNodesPreview">
         <template v-if="nodesPreviewData">
           <n-card title="订阅分析" :bordered="false" class="mt-4">
             <n-grid :cols="3" :x-gap="12">
-              <n-gi>
-                <n-statistic label="节点总数" :value="nodesPreviewData.analysis.total" />
-              </n-gi>
+              <n-gi><n-statistic label="节点总数" :value="nodesPreviewData.analysis.total" /></n-gi>
               <n-gi>
                 <n-statistic label="协议分布">
                   <n-space>
-                    <n-tag v-for="(count, protocol) in nodesPreviewData.analysis.protocols" :key="protocol" type="info">
-                      {{ protocol.toUpperCase() }}: {{ count }}
-                    </n-tag>
+                    <n-tag v-for="(count, protocol) in nodesPreviewData.analysis.protocols" :key="protocol" type="info">{{ protocol.toUpperCase() }}: {{ count }}</n-tag>
                   </n-space>
                 </n-statistic>
               </n-gi>
               <n-gi>
                 <n-statistic label="地区分布">
                    <n-space :size="'small'" style="flex-wrap: wrap;">
-                    <n-tag v-for="(count, region) in nodesPreviewData.analysis.regions" :key="region" type="success">
-                      {{ region }}: {{ count }}
-                    </n-tag>
+                    <n-tag v-for="(count, region) in nodesPreviewData.analysis.regions" :key="region" type="success">{{ region }}: {{ count }}</n-tag>
                   </n-space>
                 </n-statistic>
               </n-gi>
             </n-grid>
           </n-card>
-
-          <n-data-table
-            :columns="previewNodeColumns"
-            :data="nodesPreviewData.nodes"
-            :pagination="{ pageSize: 10 }"
-            :max-height="400"
-            class="mt-4"
-          />
+          <n-data-table :columns="previewNodeColumns" :data="nodesPreviewData.nodes" :pagination="{ pageSize: 10 }" :max-height="400" class="mt-4" />
         </template>
-        <div v-else-if="!loadingNodesPreview" style="text-align: center; padding: 20px;">
-          没有获取到节点数据。
-        </div>
+        <div v-else-if="!loadingNodesPreview" style="text-align: center; padding: 20px;">没有获取到节点数据。</div>
       </n-spin>
     </n-modal>
-
   </div>
 </template>

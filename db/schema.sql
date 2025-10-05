@@ -73,7 +73,6 @@ CREATE TABLE IF NOT EXISTS profiles (
   user_id TEXT NOT NULL,
   name TEXT NOT NULL,
   alias TEXT,
-  description TEXT,
   content TEXT,
   generation_mode TEXT NOT NULL DEFAULT 'local',
   template_id INTEGER,
