@@ -44,13 +44,6 @@
           <n-form-item label="Template Name" path="name">
             <n-input v-model:value="currentTemplate.name" placeholder="Enter template name" />
           </n-form-item>
-          <n-form-item label="Client Type" path="client_type">
-            <n-select
-              v-model:value="currentTemplate.client_type"
-              placeholder="Select client type"
-              :options="clientTypeOptions"
-            />
-          </n-form-item>
         </div>
 
         <!-- Step 2: Data Sources -->
@@ -75,7 +68,7 @@
             <CodeEditor
               :model-value="currentTemplate.content ?? ''"
               @update:model-value="currentTemplate.content = $event"
-              :language="editorLanguage"
+              language="yaml"
               style="height: 400px;"
             />
             <n-space vertical size="small" style="margin-top: 8px;">
@@ -135,7 +128,7 @@
     >
       <CodeEditor
         :model-value="previewContent"
-        :language="editorLanguage"
+        language="yaml"
         :read-only="true"
         style="height: 70vh;"
       />
@@ -153,7 +146,7 @@ import {
 import type { DataTableColumns, FormInst, FormRules, TransferOption } from 'naive-ui';
 import { Add as AddIcon, Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon } from '@vicons/ionicons5';
 import { useApi } from '@/composables/useApi';
-import type { ConfigTemplate, ClientType } from '@/types';
+import type { ConfigTemplate } from '@/types';
 import CodeEditor from '@/components/CodeEditor.vue';
 
 const api = useApi();
@@ -185,33 +178,14 @@ const subscriptionOptions = computed<TransferOption[]>(() =>
 
 const defaultTemplate: () => Partial<ConfigTemplate> = () => ({
   name: '',
-  client_type: 'CLASH',
   content: '',
   subscription_ids: [],
 });
 
 const currentTemplate = ref<Partial<ConfigTemplate>>(defaultTemplate());
 
-const editorLanguage = computed(() => {
-  switch (currentTemplate.value.client_type) {
-    case 'CLASH':
-      return 'yaml';
-    default:
-      return 'text';
-  }
-});
-
-const clientTypeOptions: { label: string; value: ClientType }[] = [
-  { label: 'Clash', value: 'CLASH' },
-  { label: 'Surge', value: 'SURGE' },
-  { label: 'V2RayN', value: 'V2RAYN' },
-  { label: 'Quantumult X', value: 'QUANTUMULT_X' },
-  { label: 'Generic', value: 'GENERIC' },
-];
-
 const formRules: FormRules = {
   name: [{ required: true, message: 'Please enter a template name', trigger: 'blur' }],
-  client_type: [{ required: true, message: 'Please select a client type', trigger: 'change' }],
   content: [{ required: true, message: 'Please enter template content', trigger: 'blur' }],
 };
 
@@ -251,7 +225,6 @@ const columns = computed<DataTableColumns<ConfigTemplate>>(() => [
       });
     }
   },
-  { title: 'Client Type', key: 'client_type', width: 150, sorter: 'default' },
   {
     title: 'Last Updated',
     key: 'updated_at',
@@ -340,7 +313,6 @@ const handleCopyToNew = (template: ConfigTemplate) => {
   currentTemplate.value = {
     ...defaultTemplate(),
     name: `${template.name} (Copy)`,
-    client_type: template.client_type,
     content: template.content,
     subscription_ids: (() => {
       if (!template.subscription_ids) return [];
@@ -394,7 +366,6 @@ const handlePreview = async () => {
   try {
     const payload = {
       content: currentTemplate.value.content,
-      client_type: currentTemplate.value.client_type,
       subscription_ids: currentTemplate.value.subscription_ids,
     };
     const response = await api.post<any>('/config-templates/preview', payload, {
@@ -462,7 +433,7 @@ const nextStep = () => {
   };
 
   if (currentStep.value === 1) {
-    validateAndProceed(['name', 'client_type']);
+    validateAndProceed(['name']);
   } else if (currentStep.value === 2) {
     // No validation needed for step 2, just proceed
     if (currentStep.value < 3) {

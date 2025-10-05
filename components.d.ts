@@ -10,6 +10,8 @@ declare module 'vue' {
   export interface GlobalComponents {
     AssetManager: typeof import('./src/components/AssetManager.vue')['default']
     CodeEditor: typeof import('./src/components/CodeEditor.vue')['default']
+    ConversionSettings: typeof import('./src/components/settings/ConversionSettings.vue')['default']
+    GeneralSettings: typeof import('./src/components/settings/GeneralSettings.vue')['default']
     Layout: typeof import('./src/components/Layout.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

@@ -22,8 +22,6 @@ export interface Subscription {
   updated_at: string;
   last_updated?: string;
   error?: string | null;
-  include_keywords?: string;
-  exclude_keywords?: string;
 }
 
 export interface Node {
@@ -62,10 +60,10 @@ export interface Profile {
   id: string;
   user_id: string;
   name: string;
-  client_type: ClientType;
   alias?: string;
   description?: string;
   template_variables?: string;
+  content?: string; // The raw JSON string from the DB
   
   // Revert to simple subscription IDs
   subscription_ids: string[];
@@ -99,7 +97,6 @@ export type ClientType = 'CLASH' | 'SURGE' | 'V2RAYN' | 'QUANTUMULT_X' | 'GENERI
 export interface ConfigTemplate {
   id: number;
   name: string;
-  client_type: ClientType;
   content: string;
   subscription_ids?: string[] | string; // Array of IDs, might be a JSON string from DB
   user_id: string;
@@ -148,4 +145,12 @@ export interface ProcessingLog {
   output_count: number;
   details: any; // Parsed JSON object
   created_at: string;
+}
+
+export interface SubconverterAsset {
+  id: number;
+  name: string;
+  url: string;
+  type: 'backend' | 'config';
+  is_default?: 0 | 1;
 }
