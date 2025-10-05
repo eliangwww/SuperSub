@@ -17,7 +17,7 @@ const authStore = useAuthStore();
 const groupStore = useGroupStore();
 const nodes = ref<Node[]>([]);
 const loading = ref(true);
-const checkingAll = ref(false); // Keep for future "check all" feature
+const checkingAll = ref(false);
 const checkedRowKeys = ref<string[]>([]);
 const filterKeyword = ref('');
 const activeTab = ref('all');
@@ -49,7 +49,7 @@ const handleBatchAction = (action: 'sort' | 'deduplicate' | 'clear') => {
         });
         if (response.success) {
           message.success(response.message || '操作成功');
-          fetchData(); // Refresh data
+          fetchData();
         } else {
           message.error(response.message || '操作失败');
         }
@@ -64,7 +64,6 @@ const filteredNodes = computed(() => {
   const keyword = filterKeyword.value.toLowerCase();
   
   return nodes.value.filter(node => {
-    // Group filter
     const inGroup = activeTab.value === 'all'
       ? true
       : activeTab.value === 'ungrouped'
@@ -73,7 +72,6 @@ const filteredNodes = computed(() => {
 
     if (!inGroup) return false;
 
-    // Keyword filter
     if (!keyword) return true;
     return node.name.toLowerCase().includes(keyword);
   });
@@ -97,14 +95,14 @@ const createColumns = ({ onTest, onEdit, onDelete, onMove }: {
       render(row) {
         switch (row.status) {
           case 'healthy':
-            return h(NIcon, { color: '#63e2b7', size: 20 }, { default: () => '●' }); // Green circle
+            return h(NIcon, { color: '#63e2b7', size: 20 }, { default: () => '●' });
           case 'unhealthy':
-            return h(NIcon, { color: '#e88080', size: 20 }, { default: () => '●' }); // Red circle
+            return h(NIcon, { color: '#e88080', size: 20 }, { default: () => '●' });
           case 'testing':
             return h(NSpin, { size: 'small' });
           case 'pending':
           default:
-            return h(NIcon, { color: '#cccccc', size: 20 }, { default: () => '●' }); // Grey circle
+            return h(NIcon, { color: '#cccccc', size: 20 }, { default: () => '●' });
         }
       }
     },
@@ -158,7 +156,7 @@ const createColumns = ({ onTest, onEdit, onDelete, onMove }: {
       render(row, index) {
         return h(NSpace, null, {
           default: () => [
-            h(NButton, { size: 'small', circle: true, tertiary: true, onClick: () => onTest(row), disabled: true /*row.status === 'testing'*/ }, { icon: () => h(NIcon, null, { default: () => h(FlashIcon) }) }),
+            h(NButton, { size: 'small', circle: true, tertiary: true, onClick: () => onTest(row), disabled: true }, { icon: () => h(NIcon, null, { default: () => h(FlashIcon) }) }),
             h(NButton, { size: 'small', onClick: () => onEdit(row) }, { default: () => '编辑' }),
             h(NButton, { size: 'small', type: 'error', ghost: true, onClick: () => onDelete(row) }, { default: () => '删除' }),
             h(NButton, { size: 'small', disabled: index === 0, onClick: () => onMove(index, 'up') }, { default: () => '上移' }),
@@ -171,179 +169,73 @@ const createColumns = ({ onTest, onEdit, onDelete, onMove }: {
 };
 
 const fetchData = async () => {
-  if (authStore.isLoggingOut) return; // Logout guard
+  if (authStore.isLoggingOut) return;
   loading.value = true;
   try {
-    const url = '/api/nodes';
-    const response = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${authStore.token}` }
-    });
-    const result: { success: boolean, data?: Node[], message?: string } = await response.json();
-    if (result.success && result.data) {
-      nodes.value = result.data;
+    const response = await api.get<Node[]>('/nodes');
+    if (response.success && Array.isArray(response.data)) {
+      nodes.value = response.data;
     } else {
-      message.error(result.message || '获取节点列表失败');
+      message.error(response.message || '获取节点列表失败');
     }
-  } catch (err) {
-    message.error('请求失败，请稍后重试');
+  } catch (err: any) {
+    message.error(err.message || '请求失败，请稍后重试');
   } finally {
     loading.value = false;
   }
 };
 
 const testNode = async (node: Node) => {
-  // Optimistic UI update
   const nodeInArray = nodes.value.find(n => n.id === node.id);
   if (nodeInArray) {
     nodeInArray.status = 'testing';
   }
 
   try {
-    const response = await fetch(`/api/nodes/${node.id}/test`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${authStore.token}`
-      }
-    });
-    const result: { success: boolean, message?: string } = await response.json();
-    if (response.status === 202 && result.success) {
-      message.info(result.message || `节点 "${node.name}" 的健康检查已启动`);
-      // The UI will be updated via SSE, no need for polling.
+    const response = await api.post(`/nodes/${node.id}/test`, {});
+    if (response.success) {
+      message.info(response.message || `节点 "${node.name}" 的健康检查已启动`);
     } else {
-      message.error(result.message || '启动健康检查失败');
-      // Revert optimistic update on failure
+      message.error(response.message || '启动健康检查失败');
       if (nodeInArray) {
-        nodeInArray.status = 'pending'; // Or its previous status
+        nodeInArray.status = 'pending';
       }
     }
-  } catch (err) {
-    message.error('请求失败，请稍后重试');
+  } catch (err: any) {
+    message.error(err.message || '请求失败，请稍后重试');
     if (nodeInArray) {
-      nodeInArray.status = 'pending'; // Or its previous status
+      nodeInArray.status = 'pending';
     }
   }
 };
 
 const testAllNodes = () => {
   message.warning('该功能正在维护中，已暂时禁用。');
-  // if (nodes.value.length === 0) {
-  //   message.warning('没有可检查的节点。');
-  //   return;
-  // }
-  //
-  // checkingAll.value = true;
-  // // Optimistic UI update: set all nodes to 'testing'
-  // nodes.value.forEach(node => {
-  //   node.status = 'testing';
-  // });
-  //
-  // const nodeIds = nodes.value.map(node => node.id);
-  // fetch('/api/nodes/health-check', {
-  //   method: 'POST',
-  //   headers: {
-  //     'Content-Type': 'application/json',
-  //     'Authorization': `Bearer ${authStore.token}`,
-  //   },
-  //   body: JSON.stringify({ nodeIds }),
-  // }).then(response => response.json()).then(result => {
-  //   const res = result as { success: boolean, message?: string };
-  //   if (res.success) {
-  //     message.info(res.message || `已启动对 ${nodeIds.length} 个节点的健康检查。`);
-  //   } else {
-  //     message.error(res.message || '启动批量健康检查失败');
-  //     checkingAll.value = false;
-  //     fetchData(); // Revert UI
-  //   }
-  // }).catch(err => {
-  //   message.error('请求启动健康检查失败，请稍后重试');
-  //   checkingAll.value = false;
-  //   fetchData(); // Revert UI
-  // });
 };
-
-// SSE functionality is temporarily disabled.
-// let eventSource: EventSource | null = null;
-// const isSseConnected = ref(false);
-//
-// const closeSSE = () => {
-//   if (eventSource) {
-//     eventSource.close();
-//     eventSource = null;
-//   }
-//   isSseConnected.value = false;
-//   console.log('SSE connection explicitly closed.');
-// };
-//
-// const setupSSE = () => {
-//   // Prevent multiple connections
-//   if (isSseConnected.value || !authStore.token) {
-//     return;
-//   }
-//
-//   // Defensive close, in case of HMR or other issues leaving a zombie connection
-//   closeSSE();
-//
-//   eventSource = new EventSource(`/api/nodes/health-check-stream?token=${authStore.token}`);
-//   isSseConnected.value = true;
-//
-//   eventSource.onopen = () => {
-//     console.log('SSE connection opened.');
-//   };
-//
-//   eventSource.addEventListener('update', (event) => {
-//     const data = JSON.parse(event.data);
-//     const node = nodes.value.find(n => n.id === data.nodeId);
-//     if (node) {
-//       node.status = data.status;
-//       node.latency = data.latency;
-//       node.last_checked = data.last_checked;
-//       node.error = data.error;
-//     }
-//   });
-//
-//   eventSource.addEventListener('finished', (event) => {
-//     const data = JSON.parse(event.data);
-//     message.success(data.message || '所有节点检查完成。');
-//     checkingAll.value = false;
-//     // We don't close the connection here, to allow for single node tests
-//   });
-//
-//   eventSource.onerror = (err) => {
-//     console.error('SSE Error:', err);
-//     message.error('与服务器的实时连接中断。');
-//     checkingAll.value = false;
-//     closeSSE(); // Close and reset state on error
-//   };
-// };
 
 const showModal = ref(false);
 const editingNode = ref<Node | null>(null);
 const saveLoading = ref(false);
 
-// For Add from Link modal
 const showAddFromLinkModal = ref(false);
 const addLink = ref('');
 const addFromLinkLoading = ref(false);
 const previewNodes = ref<(ParsedNode & { id: string; raw: string; })[]>([]);
 const importGroupId = ref<string | undefined>(undefined);
 
-// For Move to Group modal
 const showMoveToGroupModal = ref(false);
 const moveToGroupId = ref<string | null>(null);
 const moveToGroupLoading = ref(false);
 
-// For Add Group modal
 const showAddGroupModal = ref(false);
 const newGroupName = ref('');
 const addGroupLoading = ref(false);
 
-// For Edit Group modal
 const showEditGroupModal = ref(false);
 const editingGroup = ref<NodeGroup | null>(null);
 const editingGroupName = ref('');
 const editGroupLoading = ref(false);
 
-// Columns for the preview table in the modal
 const previewColumns: DataTableColumns<ParsedNode> = [
   { title: '名称', key: 'name', ellipsis: { tooltip: true } },
   { title: '协议', key: 'protocol', width: 80 },
@@ -351,7 +243,6 @@ const previewColumns: DataTableColumns<ParsedNode> = [
   { title: '端口', key: 'port', width: 70 },
 ];
 
-// Watch for changes in the textarea and parse nodes for preview
 watch(addLink, debounce((newVal: string) => {
   if (newVal.trim()) {
     previewNodes.value = parseNodeLinks(newVal);
@@ -368,68 +259,42 @@ const defaultFormState: Partial<Node> = {
 
 const formState = reactive({ ...defaultFormState });
 
-const nodeTypeOptions = [
-  { label: 'VMess', value: 'vmess' },
-  { label: 'VLESS', value: 'vless' },
-  { label: 'Shadowsocks', value: 'ss' },
-  { label: 'Trojan', value: 'trojan' },
-  { label: 'Hysteria2', value: 'hysteria2' },
-  { label: 'TUIC', value: 'tuic' },
-];
-
 const modalTitle = computed(() => (editingNode.value ? '编辑节点' : '新增节点'));
 
 const openModal = (node: Node | null = null) => {
   if (node) {
     editingNode.value = node;
     formState.name = node.name;
-    formState.link = node.link; // Directly use the original link
+    formState.link = node.link;
     showModal.value = true;
   } else {
-    // This case is for "Add New Node", which is now handled by a different modal.
     handleOpenAddFromLinkModal();
   }
 };
 
 const handleSave = async () => {
   if (!editingNode.value) {
-    // This should not happen as the add flow is separate now.
     message.error('发生意外错误：没有正在编辑的节点。');
     return;
   }
 
   saveLoading.value = true;
   try {
-    // When editing, we only update the name and protocol_params.
-    // The link remains unchanged to preserve its integrity.
-    // When editing, we only update the name and the link.
     const payload = {
       name: formState.name,
       link: formState.link,
     };
     
-    const url = `/api/nodes/${editingNode.value.id}`;
-    const method = 'PUT';
-
-    const response = await fetch(url, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authStore.token}`,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    const result: { success: boolean; message?: string } = await response.json();
-    if (result.success) {
+    const response = await api.put(`/nodes/${editingNode.value.id}`, payload);
+    if (response.success) {
       message.success('节点更新成功');
       showModal.value = false;
       fetchData();
     } else {
-      message.error(result.message || '保存失败');
+      message.error(response.message || '保存失败');
     }
-  } catch (err) {
-    message.error('请求失败，请稍后重试');
+  } catch (err: any) {
+    message.error(err.message || '请求失败，请稍后重试');
   } finally {
     saveLoading.value = false;
   }
@@ -444,34 +309,24 @@ const handleOpenAddFromLinkModal = () => {
 
 const handleBatchImport = async () => {
   if (previewNodes.value.length === 0) {
-    message.warning('没有可导入的有效节点。请在上方文本框中粘贴节点链接。');
+    message.warning('没有可导入的有效节点。');
     return;
   }
   addFromLinkLoading.value = true;
   try {
-    const response = await fetch('/api/nodes/batch-import', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authStore.token}`,
-      },
-      // The backend's batch-import endpoint can accept pre-parsed nodes.
-      body: JSON.stringify({
+    const response = await api.post('/nodes/batch-import', {
         nodes: previewNodes.value,
-        groupId: importGroupId.value || null, // Send null if undefined
-      }),
+        groupId: importGroupId.value || null,
     });
-
-    const result: { success: boolean; message?: string } = await response.json();
-    if (result.success) {
-      message.success(result.message || `成功导入 ${previewNodes.value.length} 个节点`);
+    if (response.success) {
+      message.success(response.message || `成功导入 ${previewNodes.value.length} 个节点`);
       showAddFromLinkModal.value = false;
       fetchData();
     } else {
-      message.error(result.message || '导入失败');
+      message.error(response.message || '导入失败');
     }
-  } catch (error) {
-    message.error('请求失败，请稍后重试');
+  } catch (error: any) {
+    message.error(error.message || '请求失败');
   } finally {
     addFromLinkLoading.value = false;
   }
@@ -489,19 +344,15 @@ const handleDeleteNode = (row: Node) => {
         negativeText: '取消',
         onPositiveClick: async () => {
             try {
-                const response = await fetch(`/api/nodes/${row.id}`, {
-                    method: 'DELETE',
-                    headers: { 'Authorization': `Bearer ${authStore.token}` }
-                });
-                const result: { success: boolean, message?: string } = await response.json();
-                if (result.success) {
+                const response = await api.delete(`/nodes/${row.id}`);
+                if (response.success) {
                     message.success('节点删除成功');
                     fetchData();
                 } else {
-                    message.error(result.message || '删除失败');
+                    message.error(response.message || '删除失败');
                 }
-            } catch (err) {
-                message.error('请求失败，请稍后重试');
+            } catch (err: any) {
+                message.error(err.message || '请求失败，请稍后重试');
             }
         }
     });
@@ -524,23 +375,15 @@ const handleSaveOrder = async () => {
   saveOrderLoading.value = true;
   try {
     const nodeIds = nodes.value.map(node => node.id);
-    const response = await fetch('/api/nodes/update-order', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authStore.token}`
-      },
-      body: JSON.stringify({ nodeIds })
-    });
-    const result: { success: boolean, message?: string } = await response.json();
-    if (result.success) {
+    const response = await api.post('/nodes/update-order', { nodeIds });
+    if (response.success) {
       message.success('节点顺序已保存');
       orderChanged.value = false;
     } else {
-      message.error(result.message || '保存顺序失败');
+      message.error(response.message || '保存顺序失败');
     }
-  } catch (err) {
-    message.error('请求失败，请稍后重试');
+  } catch (err: any) {
+    message.error(err.message || '请求失败，请稍后重试');
   } finally {
     saveOrderLoading.value = false;
   }
@@ -565,24 +408,16 @@ const handleBatchDelete = () => {
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        const response = await fetch('/api/nodes/batch-delete', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${authStore.token}`
-          },
-          body: JSON.stringify({ ids: checkedRowKeys.value })
-        });
-        const result: { success: boolean, message?: string } = await response.json();
-        if (result.success) {
+        const response = await api.post('/nodes/batch-delete', { ids: checkedRowKeys.value });
+        if (response.success) {
           message.success('批量删除成功');
           fetchData();
-          checkedRowKeys.value = []; // Clear selection
+          checkedRowKeys.value = [];
         } else {
-          message.error(result.message || '批量删除失败');
+          message.error(response.message || '批量删除失败');
         }
-      } catch (err) {
-        message.error('请求失败，请稍后重试');
+      } catch (err: any) {
+        message.error(err.message || '请求失败，请稍后重试');
       }
     }
   });
@@ -604,7 +439,7 @@ const handleSaveGroup = async () => {
       message.error(response.message || '创建失败');
     }
   } catch (error: any) {
-    message.error(error.message || '请求失败');
+    message.error(error.message || '创建失败');
   } finally {
     addGroupLoading.value = false;
   }
@@ -626,7 +461,7 @@ const handleGroupAction = (key: string, group: NodeGroup) => {
       showEditGroupModal.value = true;
       break;
     case 'toggle':
-      groupStore.toggleGroup(group.id);
+      groupStore.toggleGroup(group.id).catch((err: any) => message.error(err.message || '操作失败'));
       break;
     case 'delete':
       dialog.warning({
@@ -635,11 +470,15 @@ const handleGroupAction = (key: string, group: NodeGroup) => {
         positiveText: '确定',
         negativeText: '取消',
         onPositiveClick: async () => {
-          const response = await groupStore.deleteGroup(group.id);
-          if (response.success) {
-            message.success('分组删除成功');
-          } else {
-            message.error(response.message || '删除失败');
+          try {
+            const response = await groupStore.deleteGroup(group.id);
+            if (response.success) {
+              message.success('分组删除成功');
+            } else {
+              message.error(response.message || '删除失败');
+            }
+          } catch (error: any) {
+            message.error(error.message || '删除失败');
           }
         }
       });
@@ -662,7 +501,7 @@ const handleUpdateGroup = async () => {
       message.error(response.message || '更新失败');
     }
   } catch (error: any) {
-    message.error(error.message || '请求失败');
+    message.error(error.message || '更新失败');
   } finally {
     editGroupLoading.value = false;
   }
@@ -683,7 +522,7 @@ const handleMoveToGroup = async () => {
       message.success('节点分组更新成功');
       showMoveToGroupModal.value = false;
       checkedRowKeys.value = [];
-      fetchData(); // Refresh node list
+      fetchData();
     } else {
       message.error(response.message || '移动失败');
     }
@@ -697,11 +536,9 @@ const handleMoveToGroup = async () => {
 onMounted(() => {
   fetchData();
   groupStore.fetchGroups();
-  // setupSSE(); // Temporarily disabled
 });
 
 onBeforeUnmount(() => {
-  // closeSSE(); // Temporarily disabled
 });
 </script>
 

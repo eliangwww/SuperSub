@@ -1,5 +1,4 @@
 import { useAuthStore } from '@/stores/auth';
-import { useMessage } from 'naive-ui';
 
 const BASE_URL = '/api';
 
@@ -11,7 +10,6 @@ interface ApiResponse<T> {
 
 export const useApi = () => {
   const authStore = useAuthStore();
-  const message = useMessage();
 
   const request = async <T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> => {
     if (authStore.isLoggingOut) {
@@ -34,30 +32,31 @@ export const useApi = () => {
     try {
       const response = await fetch(`${BASE_URL}${endpoint}`, config);
 
-      // Handle different response types based on Accept header
-      const acceptHeader = headers.get('Accept');
-      if (acceptHeader && acceptHeader.includes('text/plain')) {
-        if (!response.ok) {
-          const errorMsg = await response.text() || `Request failed with status ${response.status}`;
+      if (response.status === 204) {
+        return { success: true, data: {} as T }; // Return success with empty data
+      }
+
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const responseData: ApiResponse<T> = await response.json();
+        if (!response.ok || (responseData.success === false)) {
+          const errorMsg = responseData.message || `Request failed with status ${response.status}`;
           throw new Error(errorMsg);
         }
-        // For text responses, we can't assume the ApiResponse wrapper, so we return it directly.
-        // The calling function will need to handle this.
-        return await response.text() as any;
+        return responseData;
       }
 
-      const responseData: ApiResponse<T> = await response.json();
-
-      if (!response.ok || (responseData.success === false)) { // Check for explicit false
-        const errorMsg = responseData.message || `Request failed with status ${response.status}`;
+      // Handle non-JSON responses
+      if (!response.ok) {
+        const errorMsg = await response.text() || `Request failed with status ${response.status}`;
         throw new Error(errorMsg);
       }
+      
+      // For text/plain or other non-json successful responses
+      return { success: true, data: await response.text() as any };
 
-      return responseData;
     } catch (error: any) {
       console.error(`API call to ${endpoint} failed:`, error);
-      // Optionally, show a global error message
-      // message.error(error.message || 'An unknown network error occurred.');
       throw error;
     }
   };
