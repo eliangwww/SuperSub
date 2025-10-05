@@ -57,15 +57,6 @@ const menuOptions = computed(() => {
      key: 'config-templates',
      icon: renderIcon(CodeIcon)
     },
-    {
-      key: 'divider-rules',
-      type: 'divider'
-    },
-    {
-      label: () => h(RouterLink, { to: { name: 'subscription-rules' } }, { default: () => 'Subscription Rules' }),
-      key: 'subscription-rules',
-      icon: renderIcon(FilterIcon)
-    },
   ];
 
   const adminMenu = [

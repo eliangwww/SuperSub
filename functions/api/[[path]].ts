@@ -505,8 +505,58 @@ subscriptions.post('/update-all', async (c) => {
     return c.json({ success: true, message: `Updated ${updatedCount} out of ${subs.length} subscriptions.` });
 });
 
+// Helper function to apply rules to a list of nodes
+const applySubscriptionRules = (nodes: (ParsedNode & { id: string; raw: string; })[], rules: any[]): (ParsedNode & { id: string; raw: string; })[] => {
+    let processedNodes = [...nodes];
+
+    for (const rule of rules) {
+        if (!rule.enabled) continue;
+
+        try {
+            const value = JSON.parse(rule.value);
+
+            if (rule.type === 'filter_by_name_keyword' && value.keywords && value.keywords.length > 0) {
+                const lowerCaseKeywords = value.keywords.map((k: string) => k.toLowerCase());
+                processedNodes = processedNodes.filter(node => {
+                    const lowerCaseName = node.name.toLowerCase();
+                    return lowerCaseKeywords.some((keyword: string) => lowerCaseName.includes(keyword));
+                });
+            }
+            else if (rule.type === 'exclude_by_name_keyword' && value.keywords && value.keywords.length > 0) {
+                 const lowerCaseKeywords = value.keywords.map((k: string) => k.toLowerCase());
+                 processedNodes = processedNodes.filter(node => {
+                    const lowerCaseName = node.name.toLowerCase();
+                    return !lowerCaseKeywords.some((keyword: string) => lowerCaseName.includes(keyword));
+                });
+            }
+            else if (rule.type === 'filter_by_name_regex' && value.regex) {
+                // Check for ignoreCase flag, e.g., (?i)
+                const ignoreCase = value.regex.startsWith('(?i)');
+                const pattern = ignoreCase ? value.regex.substring(4) : value.regex;
+                const regex = new RegExp(pattern, ignoreCase ? 'i' : '');
+                processedNodes = processedNodes.filter(node => regex.test(node.name));
+            }
+            else if (rule.type === 'rename_by_regex' && value.regex && typeof value.format !== 'undefined') {
+                const ignoreCase = value.regex.startsWith('(?i)');
+                const pattern = ignoreCase ? value.regex.substring(4) : value.regex;
+                const regex = new RegExp(pattern, ignoreCase ? 'gi' : 'g'); // Use global flag for replace
+                processedNodes = processedNodes.map(node => {
+                    return { ...node, name: node.name.replace(regex, value.format) };
+                });
+            }
+        } catch (e) {
+            console.error(`Error applying rule ${rule.id} (${rule.name}):`, e);
+        }
+    }
+
+    return processedNodes;
+};
+
+
 subscriptions.post('/preview', async (c) => {
-    const { url } = await c.req.json<{ url: string }>();
+    const user = c.get('jwtPayload');
+    const { url, subscription_id, apply_rules } = await c.req.json<{ url: string, subscription_id?: string, apply_rules?: boolean }>();
+    
     if (!url) {
         return c.json({ success: false, message: 'Missing subscription URL' }, 400);
     }
@@ -608,7 +658,36 @@ subscriptions.post('/preview', async (c) => {
             nodes = parseNodeLinks(content);
         }
 
-        return c.json({ success: true, data: { count: nodes.length, nodes: nodes } });
+        let finalNodes = nodes;
+
+        if (apply_rules && subscription_id) {
+            const { results: rules } = await c.env.DB.prepare(
+                'SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY id ASC'
+            ).bind(subscription_id, user.id).all();
+
+            if (rules && rules.length > 0) {
+                finalNodes = applySubscriptionRules(nodes, rules);
+            }
+        }
+        
+        // Re-analyze nodes after applying rules
+        const analysis = {
+            total: finalNodes.length,
+            protocols: finalNodes.reduce((acc, node) => {
+                const protocol = node.protocol || 'unknown';
+                acc[protocol] = (acc[protocol] || 0) + 1;
+                return acc;
+            }, {} as Record<string, number>),
+            regions: finalNodes.reduce((acc, node) => {
+                // Basic region detection from name, can be improved
+                const match = node.name.match(/\[(.*?)\]|\((.*?)\)|(香港|澳门|台湾|新加坡|日本|美国|英国|德国|法国|韩国|俄罗斯|IEPL|IPLC)/);
+                const region = match ? (match[1] || match[2] || match[3] || 'Unknown') : 'Unknown';
+                acc[region] = (acc[region] || 0) + 1;
+                return acc;
+            }, {} as Record<string, number>),
+        };
+
+        return c.json({ success: true, data: { nodes: finalNodes, analysis: analysis } });
 
     } catch (error: any) {
         console.error(`Error fetching/parsing subscription from ${url}:`, error);
@@ -706,8 +785,48 @@ subscriptions.post('/:id/update', async (c) => {
 subscriptions.get('/:id/rules', async (c) => {
     const user = c.get('jwtPayload');
     const { id } = c.req.param();
-    const { results } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ?').bind(id, user.id).all();
+    const { results } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? ORDER BY id ASC').bind(id, user.id).all();
     return c.json({ success: true, data: results });
+});
+
+subscriptions.post('/:id/rules', async (c) => {
+    const user = c.get('jwtPayload');
+    const { id: subscription_id } = c.req.param();
+    const body = await c.req.json<any>();
+    const now = new Date().toISOString();
+
+    await c.env.DB.prepare(
+        `INSERT INTO subscription_rules (subscription_id, user_id, name, type, value, enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(subscription_id, user.id, body.name, body.type, body.value, body.enabled ? 1 : 0, now, now).run();
+
+    return c.json({ success: true }, 201);
+});
+
+subscriptions.put('/:id/rules/:ruleId', async (c) => {
+    const user = c.get('jwtPayload');
+    const { ruleId } = c.req.param();
+    const body = await c.req.json<any>();
+    const now = new Date().toISOString();
+
+    await c.env.DB.prepare(
+        `UPDATE subscription_rules
+         SET name = ?, type = ?, value = ?, enabled = ?, updated_at = ?
+         WHERE id = ? AND user_id = ?`
+    ).bind(body.name, body.type, body.value, body.enabled ? 1 : 0, now, ruleId, user.id).run();
+    
+    return c.json({ success: true });
+});
+
+subscriptions.delete('/:id/rules/:ruleId', async (c) => {
+    const user = c.get('jwtPayload');
+    const { ruleId } = c.req.param();
+
+    await c.env.DB.prepare(
+        'DELETE FROM subscription_rules WHERE id = ? AND user_id = ?'
+    ).bind(ruleId, user.id).run();
+
+    return c.json({ success: true });
 });
 
 subscriptions.put('/:id', async (c) => {
@@ -843,12 +962,6 @@ app.route('/profiles', profiles);
 app.get('/config-templates', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const { results } = await c.env.DB.prepare('SELECT * FROM config_templates WHERE user_id = ? OR is_system = 1').bind(user.id).all();
-    return c.json({ success: true, data: results });
-});
-
-app.get('/subscription-rules', manualAuthMiddleware, async (c) => {
-    const user = c.get('jwtPayload');
-    const { results } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE user_id = ?').bind(user.id).all();
     return c.json({ success: true, data: results });
 });
 
