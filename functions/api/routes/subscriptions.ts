@@ -11,9 +11,6 @@ export const userAgents = [
     'V2RayN/6.23',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
     'ClashforWindows/0.20.39',
-    'Clash Meta for Android/2.9.1',
-    'Quantumult X/1.0.30',
-    'Surge/5.2.1'
 ];
 
 // Helper function to parse subscription content into a node list
