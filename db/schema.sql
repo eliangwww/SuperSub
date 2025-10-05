@@ -136,19 +136,6 @@ CREATE TABLE IF NOT EXISTS settings (
   FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
--- Create the config_templates table
-CREATE TABLE IF NOT EXISTS config_templates (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    client_type TEXT NOT NULL CHECK(client_type IN ('CLASH', 'SURGE', 'V2RAYN', 'QUANTUMULT_X', 'GENERIC')),
-    content TEXT NOT NULL,
-    subscription_ids TEXT DEFAULT '[]',
-    user_id TEXT,
-    is_system INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
 -- Create system_settings table for global settings
 CREATE TABLE IF NOT EXISTS system_settings (
   key TEXT PRIMARY KEY,

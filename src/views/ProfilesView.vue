@@ -6,7 +6,7 @@ import { useMessage, useDialog, NButton, NSpace, NCode, NDataTable, NPageHeader,
 import type { DataTableColumns, FormInst } from 'naive-ui';
 import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon } from '@vicons/ionicons5';
 import { api } from '@/utils/api';
-import type { ApiResponse, Profile, Subscription, Node, ConfigTemplate } from '@/types';
+import type { ApiResponse, Profile, Subscription, Node } from '@/types';
 
 const message = useMessage();
 const dialog = useDialog();
@@ -16,7 +16,6 @@ const profiles = ref<Profile[]>([]);
 const loading = ref(true);
 const allSubscriptions = ref<Subscription[]>([]);
 const allNodes = ref<Node[]>([]);
-const allTemplates = ref<ConfigTemplate[]>([]);
 const allBackends = ref<any[]>([]);
 const allConfigs = ref<any[]>([]);
 
@@ -291,10 +290,9 @@ const fetchProfiles = async () => {
 
 const fetchAllSources = async () => {
   try {
-    const [subsRes, nodesRes, tplRes, assetsRes] = await Promise.all([
+    const [subsRes, nodesRes, assetsRes] = await Promise.all([
       api.get<ApiResponse<Subscription[]>>('/subscriptions'),
       api.get<ApiResponse<Node[]>>('/nodes'),
-      api.get<ApiResponse<ConfigTemplate[]>>('/config-templates'),
       api.get<ApiResponse<any[]>>('/subconverter-assets'),
     ]);
     if (subsRes.data.success && subsRes.data.data) {
@@ -303,12 +301,9 @@ const fetchAllSources = async () => {
     if (nodesRes.data.success && nodesRes.data.data) {
       allNodes.value = nodesRes.data.data;
     }
-    if (tplRes.data.success && tplRes.data.data) {
-      allTemplates.value = tplRes.data.data;
-    }
     if (assetsRes.data.success && assetsRes.data.data) {
-      allBackends.value = assetsRes.data.data.filter(a => a.type === 'backend');
-      allConfigs.value = assetsRes.data.data.filter(a => a.type === 'config');
+      allBackends.value = assetsRes.data.data.filter((a: any) => a.type === 'backend');
+      allConfigs.value = assetsRes.data.data.filter((a: any) => a.type === 'config');
     }
   } catch (err: any) {
     if (!axios.isCancel(err)) {

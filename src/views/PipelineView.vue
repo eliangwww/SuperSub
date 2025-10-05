@@ -176,7 +176,7 @@ import type { FormInst, DataTableColumns } from 'naive-ui';
 import { NTag } from 'naive-ui';
 import { Add as AddIcon, Pencil as EditIcon, TrashBinOutline as DeleteIcon } from '@vicons/ionicons5';
 import { useApi } from '@/composables/useApi';
-import type { Profile, ProcessingUnit, Node, ConfigTemplate } from '@/types';
+import type { Profile, ProcessingUnit, Node } from '@/types';
 
 const props = defineProps<{
   id: string;
