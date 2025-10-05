@@ -36,6 +36,9 @@ export const useGroupStore = defineStore('groups', () => {
   }
 
   async function addGroup(name: string) {
+    if (groups.value.length >= 10) {
+      return { success: false, message: '最多只能创建10个分组。' };
+    }
     const api = useApi();
     const response = await api.post('/groups', { name });
     if (response.success) {
