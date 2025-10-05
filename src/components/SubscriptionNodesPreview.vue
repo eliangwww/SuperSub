@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, h, watch } from 'vue';
-import { useMessage, NDataTable, NSpin, NTag, NEmpty, NButton, NSpace } from 'naive-ui';
+import { ref, onMounted, h, watch, computed } from 'vue';
+import { useMessage, NDataTable, NSpin, NTag, NEmpty, NButton, NSpace, NSwitch, NTooltip } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { Node, ApiResponse } from '@/types';
 import { api } from '@/utils/api';
@@ -24,6 +24,7 @@ const message = useMessage();
 const nodes = ref<Partial<Node>[]>([]);
 const loading = ref(false);
 const importLoading = ref(false);
+const applyRules = ref(false);
 
 const columns: DataTableColumns<Partial<Node>> = [
     { title: '名称', key: 'name', ellipsis: { tooltip: true }, fixed: 'left', width: 200 },
@@ -81,7 +82,12 @@ const fetchPreview = async () => {
   loading.value = true;
   nodes.value = [];
   try {
-    const response = await api.post<ApiResponse<{ nodes: Partial<Node>[] }>>('/subscriptions/preview', { url: props.subscriptionUrl });
+    const payload = {
+      url: props.subscriptionUrl,
+      subscription_id: props.subscriptionId,
+      apply_rules: applyRules.value,
+    };
+    const response = await api.post<ApiResponse<{ nodes: Partial<Node>[] }>>('/subscriptions/preview', payload);
     if (response.data.success && response.data.data?.nodes) {
       nodes.value = response.data.data.nodes;
     } else {
@@ -119,18 +125,41 @@ const handleImport = async () => {
 defineExpose({
   fetchPreview,
 });
+
+watch(applyRules, () => {
+    fetchPreview();
+});
+
+// Re-fetch when the modal becomes visible, if it's not the initial load
+watch(() => props.show, (newVal, oldVal) => {
+    if (newVal && !oldVal) {
+        // Reset applyRules switch to off when modal re-opens
+        applyRules.value = false;
+        fetchPreview();
+    }
+});
 </script>
 
 <template>
   <div>
-    <n-space justify="end" class="mb-4">
+    <n-space justify="space-between" class="mb-4" align="center">
+      <n-space align="center">
+        <n-switch v-model:value="applyRules" />
+        <label>应用处理规则</label>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10s10-4.48 10-10S17.52 2 12 2zm0 15c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1s1 .45 1 1v4c0 .55-.45 1-1 1zm1-8h-2V7h2v2z"/></svg>
+          </template>
+          启用后，将加载并应用您在此订阅上配置的所有规则（如过滤、重命名等）。
+        </n-tooltip>
+      </n-space>
       <n-button
         type="primary"
         @click="handleImport"
         :loading="importLoading"
         :disabled="loading || nodes.length === 0"
       >
-        将这 {{ nodes.length }} 个节点导入
+        导入 {{ nodes.length }} 个节点
       </n-button>
     </n-space>
     <n-spin :show="loading">

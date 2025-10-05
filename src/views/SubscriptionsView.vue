@@ -78,8 +78,6 @@ const formState = reactive({
   id: '',
   name: '',
   url: '',
-  include_keywords: '',
-  exclude_keywords: '',
 })
 
 const modalTitle = computed(() => (editingSubscription.value ? '编辑订阅' : '新增订阅'))
@@ -160,15 +158,11 @@ const openModal = (sub: Subscription | null = null) => {
     formState.id = sub.id
     formState.name = sub.name
     formState.url = sub.url
-    formState.include_keywords = sub.include_keywords || ''
-    formState.exclude_keywords = sub.exclude_keywords || ''
   } else {
     editingSubscription.value = null
     formState.id = ''
     formState.name = ''
     formState.url = ''
-    formState.include_keywords = ''
-    formState.exclude_keywords = ''
   }
   showModal.value = true
 }
@@ -199,8 +193,6 @@ const handleSave = async () => {
     const payload = {
       name: formState.name,
       url: formState.url,
-      include_keywords: formState.include_keywords,
-      exclude_keywords: formState.exclude_keywords,
     }
     const response = editingSubscription.value
       ? await api.put<ApiResponse>(`/subscriptions/${formState.id}`, payload)
@@ -661,20 +653,6 @@ onMounted(fetchSubscriptions)
         <n-form-item label="URL" required>
           <n-input v-model:value="formState.url" placeholder="输入订阅链接" />
         </n-form-item>
-        <n-form-item label="包含关键词">
-          <n-input
-            type="textarea"
-            v-model:value="formState.include_keywords"
-            placeholder="每行一个关键词，只保留名称包含这些词的节点"
-          />
-        </n-form-item>
-        <n-form-item label="排除关键词">
-          <n-input
-            type="textarea"
-            v-model:value="formState.exclude_keywords"
-            placeholder="每行一个关键词，排除名称包含这些词的节点"
-          />
-        </n-form-item>
       </n-form>
     </n-modal>
 
@@ -813,14 +791,16 @@ onMounted(fetchSubscriptions)
         <n-form-item v-if="ruleFormState.type === 'filter_by_name_keyword'" label="关键词" required>
           <n-dynamic-tags v-model:value="ruleFormState.keywords" />
           <template #feedback>
-            输入关键词后按回车确认
+            保留节点名包含任意一个关键词的节点。输入后按回车确认。
           </template>
         </n-form-item>
 
         <n-form-item v-else-if="ruleFormState.type === 'rename_by_regex'" label="重命名规则" required>
           <n-space vertical style="width: 100%;">
-            <n-input v-model:value="ruleFormState.renameRegex" placeholder="输入用于匹配的正则表达式" />
-            <n-input v-model:value="ruleFormState.renameFormat" placeholder="输入重命名格式, 如 $1-$2" />
+            <n-input v-model:value="ruleFormState.renameRegex" placeholder="匹配规则 (Regex)" />
+            <div class="text-xs text-gray-400 mt-1">示例: 从 "[HK] Node 01" 提取 "HK" 和 "01", 可用 `^\[(.*)\]\s.*(\d+)$`</div>
+            <n-input v-model:value="ruleFormState.renameFormat" placeholder="重命名格式" class="mt-2" />
+            <div class="text-xs text-gray-400 mt-1">示例: `NewName-$1-$2` 会得到 "NewName-HK-01"。`$1` 代表第一个括号匹配的内容。</div>
           </n-space>
         </n-form-item>
 
@@ -829,6 +809,9 @@ onMounted(fetchSubscriptions)
             v-model:value="ruleFormState.regex"
             placeholder="输入用于过滤的正则表达式"
           />
+          <template #feedback>
+            保留节点名匹配正则表达式的节点。示例: `(?i)iepl` (不区分大小写匹配 "iepl")
+          </template>
         </n-form-item>
 
         <n-form-item v-else label="规则值 (JSON)" required>

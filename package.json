@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "npm-run-all --parallel start:frontend start:backend",
-    "start:backend": "wrangler pages dev ./dist --local --persist-to ./.wrangler/state --port 8792",
+    "start:backend": "wrangler pages dev ./dist --local --persist-to ./.wrangler/state --port 8793",
     "start:frontend": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
