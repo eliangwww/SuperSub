@@ -52,11 +52,6 @@ const menuOptions = computed(() => {
       key: 'profiles',
       icon: renderIcon(ProfileIcon)
     },
-    {
-     label: () => h(RouterLink, { to: { name: 'config-templates' } }, { default: () => 'Config Templates' }),
-     key: 'config-templates',
-     icon: renderIcon(CodeIcon)
-    },
   ];
 
   const adminMenu = [

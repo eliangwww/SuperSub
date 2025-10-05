@@ -48,12 +48,6 @@ app.get('/node-statuses', manualAuthMiddleware, async (c) => {
     return c.json({ success: true, data: sanitizedResults });
 });
 
-app.get('/config-templates', manualAuthMiddleware, async (c) => {
-    const user = c.get('jwtPayload');
-    const { results } = await c.env.DB.prepare('SELECT * FROM config_templates WHERE user_id = ? OR is_system = 1').bind(user.id).all();
-    return c.json({ success: true, data: results });
-});
-
 app.get('/settings', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const { results } = await c.env.DB.prepare('SELECT * FROM settings WHERE user_id = ?').bind(user.id).all();

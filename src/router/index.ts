@@ -5,7 +5,6 @@ import NodesView from '../views/NodesView.vue'
 import SubscriptionsView from '../views/SubscriptionsView.vue'
 import ProfilesView from '../views/ProfilesView.vue'
 import SettingsView from '../views/SettingsView.vue'
-import ConfigTemplatesView from '../views/ConfigTemplatesView.vue'
 import PipelineView from '../views/PipelineView.vue'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
@@ -48,12 +47,6 @@ const router = createRouter({
       path: '/settings',
       name: 'settings',
       component: SettingsView,
-      meta: { requiresAuth: true }
-    },
-    {
-      path: '/config-templates',
-      name: 'config-templates',
-      component: ConfigTemplatesView,
       meta: { requiresAuth: true }
     },
     {

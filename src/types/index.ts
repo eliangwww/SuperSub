@@ -94,16 +94,6 @@ export interface SubscriptionRule {
 
 export type ClientType = 'CLASH' | 'SURGE' | 'V2RAYN' | 'QUANTUMULT_X' | 'GENERIC';
 
-export interface ConfigTemplate {
-  id: number;
-  name: string;
-  content: string;
-  subscription_ids?: string[] | string; // Array of IDs, might be a JSON string from DB
-  user_id: string;
-  is_system?: number;
-  created_at: string;
-  updated_at: string;
-}
 
 export interface ProcessingChain {
   id: string;
