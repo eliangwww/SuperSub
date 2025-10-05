@@ -39,10 +39,24 @@ alias: '',
   nodeIds: [] as string[],
 });
 
-// For Preview Modal
-const showPreviewModal = ref(false);
-const previewContent = ref('');
-const loadingPreview = ref(false);
+// For the original text preview modal (which we are replacing)
+// const showPreviewModal = ref(false);
+// const previewContent = ref('');
+// const loadingPreview = ref(false);
+
+// For the new Nodes Preview Modal
+const showNodesPreviewModal = ref(false);
+const loadingNodesPreview = ref(false);
+const currentProfileForPreview = ref<Profile | null>(null);
+const nodesPreviewData = ref<{
+  nodes: Partial<Node>[];
+  analysis: {
+    total: number;
+    protocols: Record<string, number>;
+    regions: Record<string, number>;
+  };
+} | null>(null);
+
 
 // For custom multi-select
 const subFilter = ref('');
@@ -122,6 +136,14 @@ const modalTitle = computed(() => (editingProfile.value ? '编辑配置' : '新�
 
 const subscriptionOptions = computed(() => allSubscriptions.value.map(s => ({ label: s.name, value: s.id })));
 const nodeOptions = computed(() => allNodes.value.map(n => ({ label: n.name, value: n.id })));
+
+const previewNodeColumns: DataTableColumns<Partial<Node>> = [
+  { title: '节点名称', key: 'name', ellipsis: { tooltip: true } },
+  { title: '类型', key: 'type', width: 80, align: 'center' },
+  { title: '服务器', key: 'server', width: 150, ellipsis: { tooltip: true } },
+  { title: '端口', key: 'port', width: 80, align: 'center' },
+];
+
 const backendOptions = computed(() => allBackends.value.map(b => ({ label: b.name, value: b.id })));
 const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name, value: c.id })));
 
@@ -389,30 +411,32 @@ const handleCopyLink = (row: Profile) => {
   });
 };
 
-const handlePreview = async (row: Profile) => {
-  previewContent.value = '';
-  loadingPreview.value = true;
-  showPreviewModal.value = true;
+const onPreview = async (row: Profile) => {
+  currentProfileForPreview.value = row;
+  nodesPreviewData.value = null;
+  loadingNodesPreview.value = true;
+  showNodesPreviewModal.value = true;
   try {
-    // The generate endpoint returns plain text, so we handle it directly
-    const response = await api.get<string>(`/profiles/${row.id}/generate`);
-    const textContent = response.data;
-    if (textContent) {
-      previewContent.value = atob(textContent);
+    const response = await api.get<ApiResponse<typeof nodesPreviewData.value>>(`/profiles/${row.id}/preview-nodes`);
+    if (response.data.success && response.data.data) {
+      nodesPreviewData.value = response.data.data;
+    } else {
+      message.error(response.data.message || '加载预览失败');
+      showNodesPreviewModal.value = false;
     }
   } catch (err: any) {
     if (!axios.isCancel(err)) {
-      message.error(err.message || '生成预览失败');
-      showPreviewModal.value = false;
+      message.error(err.message || '请求预览失败');
+      showNodesPreviewModal.value = false;
     }
   } finally {
-    loadingPreview.value = false;
+    loadingNodesPreview.value = false;
   }
 };
 
 const columns = createColumns({
     onCopy: handleCopyLink,
-    onPreview: handlePreview,
+    onPreview: onPreview,
     onEdit: openEditModal,
     onDelete: handleDelete,
 });
@@ -550,18 +574,54 @@ onMounted(fetchProfiles);
       </template>
     </n-modal>
 
-    <!-- Preview Modal -->
+    <!-- Nodes Preview Modal -->
     <n-modal
-        v-model:show="showPreviewModal"
-        preset="card"
-        style="width: 800px;"
-        title="配置预览"
-        :bordered="false"
-        size="huge"
+      v-model:show="showNodesPreviewModal"
+      preset="card"
+      :title="`节点预览 - ${currentProfileForPreview?.name}`"
+      style="width: 800px;"
+      :mask-closable="true"
     >
-        <n-spin :show="loadingPreview">
-            <n-code :code="previewContent" language="text" word-wrap style="max-height: 60vh;"></n-code>
-        </n-spin>
+      <n-spin :show="loadingNodesPreview">
+        <template v-if="nodesPreviewData">
+          <n-card title="订阅分析" :bordered="false" class="mt-4">
+            <n-grid :cols="3" :x-gap="12">
+              <n-gi>
+                <n-statistic label="节点总数" :value="nodesPreviewData.analysis.total" />
+              </n-gi>
+              <n-gi>
+                <n-statistic label="协议分布">
+                  <n-space>
+                    <n-tag v-for="(count, protocol) in nodesPreviewData.analysis.protocols" :key="protocol" type="info">
+                      {{ protocol.toUpperCase() }}: {{ count }}
+                    </n-tag>
+                  </n-space>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="地区分布">
+                   <n-space :size="'small'" style="flex-wrap: wrap;">
+                    <n-tag v-for="(count, region) in nodesPreviewData.analysis.regions" :key="region" type="success">
+                      {{ region }}: {{ count }}
+                    </n-tag>
+                  </n-space>
+                </n-statistic>
+              </n-gi>
+            </n-grid>
+          </n-card>
+
+          <n-data-table
+            :columns="previewNodeColumns"
+            :data="nodesPreviewData.nodes"
+            :pagination="{ pageSize: 10 }"
+            :max-height="400"
+            class="mt-4"
+          />
+        </template>
+        <div v-else-if="!loadingNodesPreview" style="text-align: center; padding: 20px;">
+          没有获取到节点数据。
+        </div>
+      </n-spin>
     </n-modal>
 
   </div>
