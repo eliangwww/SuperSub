@@ -178,19 +178,6 @@ CREATE TABLE IF NOT EXISTS subscription_processing_logs (
     FOREIGN KEY (profile_id) REFERENCES profiles (id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS processing_units (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    profile_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    type TEXT NOT NULL,
-    config TEXT NOT NULL,
-    order_index INTEGER NOT NULL,
-    is_enabled INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
-);
 
 -- Seed initial system settings
 INSERT OR IGNORE INTO system_settings (key, value) VALUES ('allow_registration', 'true');
