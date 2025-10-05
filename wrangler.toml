@@ -1,0 +1,19 @@
+name = "supersub"
+compatibility_date = "2025-07-23"
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "supersub-db"
+database_id = "dummy-id-for-local-d1"
+
+# KV Namespace binding
+[[kv_namespaces]]
+binding = "KV"
+id = "dummy-id-for-local-kv"
+
+[vars]
+JWT_SECRET = "a-very-secret-and-random-string-for-local-dev"
+
+[triggers]
+crons = ["0 * * * *"]
