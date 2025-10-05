@@ -623,7 +623,11 @@ subscriptions.post('/preview', async (c) => {
 
     } catch (error: any) {
         console.error(`Error fetching/parsing subscription from ${url}:`, error);
-        return c.json({ success: false, message: `Error processing subscription: ${error.message}` }, 500);
+        // Provide a more user-friendly message for network or fetch-related errors
+        const errorMessage = error.cause?.message?.includes('ECONNRESET') || error.message?.includes('Network connection lost')
+            ? '获取订阅超时或网络连接失败'
+            : `处理订阅时出错: ${error.message}`;
+        return c.json({ success: false, message: errorMessage }, 500);
     }
 });
 
