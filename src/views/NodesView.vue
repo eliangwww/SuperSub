@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, h, reactive, computed, watch, onBeforeUnmount } from 'vue';
 import { useMessage, useDialog, NButton, NSpace, NTag, NIcon, NPageHeader, NDataTable, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpin, NTabs, NTabPane, NDropdown } from 'naive-ui';
+import draggable from 'vuedraggable';
 import { debounce } from 'lodash-es';
 import type { DataTableColumns } from 'naive-ui';
 import { Node } from '@/types';
 import { useAuthStore } from '@/stores/auth';
 import { useGroupStore, type NodeGroup } from '@/stores/groups';
-import { FlashOutline as FlashIcon } from '@vicons/ionicons5';
+import { FlashOutline as FlashIcon, EllipsisVertical as MoreIcon, ReorderFourOutline as DragHandleIcon } from '@vicons/ionicons5';
 import { parseNodeLinks, ParsedNode } from '@/utils/nodeParser';
 import { useApi } from '@/composables/useApi';
 
@@ -21,6 +22,9 @@ const checkingAll = ref(false);
 const checkedRowKeys = ref<string[]>([]);
 const filterKeyword = ref('');
 const activeTab = ref('all');
+const isSorting = ref(false);
+const orderChanged = ref(false);
+const saveOrderLoading = ref(false);
 
 const handleBatchAction = (action: 'sort' | 'deduplicate' | 'clear') => {
   const groupName = activeTab.value === 'all'
@@ -77,11 +81,10 @@ const filteredNodes = computed(() => {
   });
 });
 
-const createColumns = ({ onTest, onEdit, onDelete, onMove }: {
+const createColumns = ({ onTest, onEdit, onDelete }: {
     onTest: (row: Node) => void,
     onEdit: (row: Node) => void,
     onDelete: (row: Node) => void,
-    onMove: (index: number, direction: 'up' | 'down') => void,
 }): DataTableColumns<Node> => {
   return [
     {
@@ -153,14 +156,12 @@ const createColumns = ({ onTest, onEdit, onDelete, onMove }: {
       title: '操作',
       key: 'actions',
       width: 220,
-      render(row, index) {
+      render(row) {
         return h(NSpace, null, {
           default: () => [
-            h(NButton, { size: 'small', circle: true, tertiary: true, onClick: () => onTest(row), disabled: true }, { icon: () => h(NIcon, null, { default: () => h(FlashIcon) }) }),
-            h(NButton, { size: 'small', onClick: () => onEdit(row) }, { default: () => '编辑' }),
-            h(NButton, { size: 'small', type: 'error', ghost: true, onClick: () => onDelete(row) }, { default: () => '删除' }),
-            h(NButton, { size: 'small', disabled: index === 0, onClick: () => onMove(index, 'up') }, { default: () => '上移' }),
-            h(NButton, { size: 'small', disabled: index === nodes.value.length - 1, onClick: () => onMove(index, 'down') }, { default: () => '下移' }),
+            h(NButton, { size: 'small', circle: true, tertiary: true, onClick: () => testNode(row), disabled: true }, { icon: () => h(NIcon, null, { default: () => h(FlashIcon) }) }),
+            h(NButton, { size: 'small', onClick: () => handleEditNode(row) }, { default: () => '编辑' }),
+            h(NButton, { size: 'small', type: 'error', ghost: true, onClick: () => handleDeleteNode(row) }, { default: () => '删除' }),
           ]
         });
       }
@@ -235,6 +236,11 @@ const showEditGroupModal = ref(false);
 const editingGroup = ref<NodeGroup | null>(null);
 const editingGroupName = ref('');
 const editGroupLoading = ref(false);
+
+const showDropdown = ref(false);
+const dropdownX = ref(0);
+const dropdownY = ref(0);
+const activeDropdownGroup = ref<NodeGroup | null>(null);
 
 const previewColumns: DataTableColumns<ParsedNode> = [
   { title: '名称', key: 'name', ellipsis: { tooltip: true } },
@@ -358,19 +364,6 @@ const handleDeleteNode = (row: Node) => {
     });
 };
 
-const orderChanged = ref(false);
-const saveOrderLoading = ref(false);
-
-const moveNode = (index: number, direction: 'up' | 'down') => {
-  if (direction === 'up' && index > 0) {
-    [nodes.value[index], nodes.value[index - 1]] = [nodes.value[index - 1], nodes.value[index]];
-    orderChanged.value = true;
-  } else if (direction === 'down' && index < nodes.value.length - 1) {
-    [nodes.value[index], nodes.value[index + 1]] = [nodes.value[index + 1], nodes.value[index]];
-    orderChanged.value = true;
-  }
-};
-
 const handleSaveOrder = async () => {
   saveOrderLoading.value = true;
   try {
@@ -379,6 +372,8 @@ const handleSaveOrder = async () => {
     if (response.success) {
       message.success('节点顺序已保存');
       orderChanged.value = false;
+      isSorting.value = false;
+      fetchData();
     } else {
       message.error(response.message || '保存顺序失败');
     }
@@ -393,7 +388,6 @@ const columns = createColumns({
     onTest: testNode,
     onEdit: handleEditNode,
     onDelete: handleDeleteNode,
-    onMove: moveNode,
 });
 
 const handleBatchDelete = () => {
@@ -453,7 +447,11 @@ const getDropdownOptions = (group: NodeGroup) => {
   ];
 };
 
-const handleGroupAction = (key: string, group: NodeGroup) => {
+const handleGroupAction = (key: string) => {
+  showDropdown.value = false;
+  const group = activeDropdownGroup.value;
+  if (!group) return;
+
   switch (key) {
     case 'rename':
       editingGroup.value = group;
@@ -474,6 +472,9 @@ const handleGroupAction = (key: string, group: NodeGroup) => {
             const response = await groupStore.deleteGroup(group.id);
             if (response.success) {
               message.success('分组删除成功');
+              if (activeTab.value === group.id) {
+                activeTab.value = 'all';
+              }
             } else {
               message.error(response.message || '删除失败');
             }
@@ -485,6 +486,32 @@ const handleGroupAction = (key: string, group: NodeGroup) => {
       break;
   }
 };
+
+const handleTabClick = (group: NodeGroup, event: MouseEvent) => {
+  const target = event.target as HTMLElement;
+  // 如果点击的是图标或其父元素(按钮)，则显示菜单
+  if (target.closest('.group-actions-button')) {
+    showDropdown.value = true;
+    dropdownX.value = event.clientX;
+    dropdownY.value = event.clientY;
+    activeDropdownGroup.value = group;
+  } else {
+    // 否则切换 tab
+    activeTab.value = group.id;
+  }
+};
+
+const handleContextMenu = (group: NodeGroup, event: MouseEvent) => {
+  event.preventDefault();
+  showDropdown.value = false; // Hide any existing dropdown
+  setTimeout(() => {
+    showDropdown.value = true;
+    dropdownX.value = event.clientX;
+    dropdownY.value = event.clientY;
+    activeDropdownGroup.value = group;
+  }, 50);
+};
+
 
 const handleUpdateGroup = async () => {
   if (!editingGroup.value || !editingGroupName.value.trim()) {
@@ -550,8 +577,10 @@ onBeforeUnmount(() => {
       </template>
       <template #extra>
         <n-space>
-          <n-button v-if="orderChanged" type="success" @click="handleSaveOrder" :loading="saveOrderLoading">保存排序</n-button>
-          <n-button @click="handleBatchAction('sort')">一键排序</n-button>
+          <n-button v-if="!isSorting" @click="isSorting = true">手动排序</n-button>
+          <n-button v-if="isSorting" type="success" @click="handleSaveOrder" :disabled="!orderChanged" :loading="saveOrderLoading">保存排序</n-button>
+          <n-button v-if="isSorting" @click="isSorting = false; orderChanged = false; fetchData();">取消</n-button>
+          <n-button v-if="!isSorting" @click="handleBatchAction('sort')">一键排序</n-button>
           <n-button @click="handleBatchAction('deduplicate')">一键去重</n-button>
           <n-button type="primary" @click="openModal(null)">导入节点</n-button>
           <n-button type="primary" ghost @click="showAddGroupModal = true">新增分组</n-button>
@@ -571,23 +600,43 @@ onBeforeUnmount(() => {
       style="max-width: 300px;"
     />
 
-    <n-tabs type="card" class="mt-4" :value="activeTab" @update:value="activeTab = $event">
+    <n-tabs type="card" class="mt-4" v-model:value="activeTab">
       <n-tab-pane name="all" tab="全部" />
       <n-tab-pane name="ungrouped" tab="未分组" />
-      <n-tab-pane v-for="group in groupStore.groups" :key="group.id" :name="group.id">
+      <n-tab-pane
+        v-for="group in groupStore.groups"
+        :key="group.id"
+        :name="group.id"
+        :tab="group.name"
+      >
         <template #tab>
-          <n-dropdown
-            trigger="click"
-            :options="getDropdownOptions(group)"
-            @select="(key) => handleGroupAction(key, group)"
+          <div 
+            class="group-tab-wrapper"
+            @click.prevent="handleTabClick(group, $event)"
+            @contextmenu.prevent="handleContextMenu(group, $event)"
           >
-            <span :style="{ color: group.is_enabled ? '' : '#999' }">{{ group.name }}</span>
-          </n-dropdown>
+            <span :style="{ color: group.is_enabled ? '' : '#999', marginRight: '8px' }">{{ group.name }}</span>
+            <n-button text class="group-actions-button">
+              <n-icon :component="MoreIcon" />
+            </n-button>
+          </div>
         </template>
       </n-tab-pane>
     </n-tabs>
 
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :x="dropdownX"
+      :y="dropdownY"
+      :options="activeDropdownGroup ? getDropdownOptions(activeDropdownGroup) : []"
+      :show="showDropdown"
+      @select="handleGroupAction"
+      @clickoutside="showDropdown = false"
+    />
+
     <n-data-table
+      v-if="!isSorting"
       :columns="columns"
       :data="filteredNodes"
       :row-key="(row: Node) => row.id"
@@ -597,6 +646,46 @@ onBeforeUnmount(() => {
       :bordered="false"
       class="mt-4"
     />
+
+    <div v-if="isSorting" class="n-data-table mt-4" :class="{ 'n-data-table--loading': loading }">
+      <div class="n-data-table-wrapper">
+        <table class="n-data-table-table n-data-table-table--bordered n-data-table-table--single-line">
+          <thead class="n-data-table-thead">
+            <tr class="n-data-table-tr">
+              <th class="n-data-table-th" style="width: 60px; text-align: center; padding: 12px;">排序</th>
+              <th class="n-data-table-th" style="padding: 12px;">名称</th>
+              <th class="n-data-table-th" style="padding: 12px;">服务器</th>
+              <th class="n-data-table-th" style="width: 100px; padding: 12px;">端口</th>
+              <th class="n-data-table-th" style="width: 120px; padding: 12px;">类型</th>
+            </tr>
+          </thead>
+          <draggable
+            :list="nodes"
+            item-key="id"
+            tag="tbody"
+            handle=".drag-handle"
+            class="n-data-table-tbody"
+            ghost-class="sortable-ghost"
+            @end="orderChanged = true"
+          >
+            <template #item="{ element: rowData }">
+              <tr class="n-data-table-tr" :key="rowData.id" v-if="filteredNodes.some(n => n.id === rowData.id)">
+                <td class="n-data-table-td drag-handle" style="padding: 12px;">
+                  <n-icon :component="DragHandleIcon" size="20" />
+                </td>
+                <td class="n-data-table-td" style="padding: 12px;">{{ rowData.name }}</td>
+                <td class="n-data-table-td" style="padding: 12px;">{{ rowData.server }}</td>
+                <td class="n-data-table-td" style="padding: 12px;">{{ rowData.port }}</td>
+                <td class="n-data-table-td" style="padding: 12px;">{{ rowData.protocol || rowData.type }}</td>
+              </tr>
+            </template>
+          </draggable>
+        </table>
+      </div>
+      <div v-if="loading" class="n-data-table-loading-wrapper">
+        <div class="n-data-table-loading-cover"><n-spin size="medium" /></div>
+      </div>
+    </div>
 
     <n-modal
       v-model:show="showModal"
@@ -734,3 +823,37 @@ onBeforeUnmount(() => {
       </n-form>
     </n-modal>
 </template>
+
+<style scoped>
+.group-tab-wrapper {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+}
+
+.group-actions-button {
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.group-tab-wrapper:hover .group-actions-button {
+  opacity: 1;
+}
+
+.drag-handle {
+  cursor: move;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.n-data-table-table--single-line .n-data-table-td,
+.n-data-table-table--single-line .n-data-table-th {
+  padding: 12px;
+}
+
+.sortable-ghost {
+  opacity: 0.4;
+  background-color: #63e2b7 !important;
+}
+</style>
