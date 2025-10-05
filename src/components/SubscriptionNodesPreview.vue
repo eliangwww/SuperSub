@@ -133,8 +133,6 @@ watch(applyRules, () => {
 // Re-fetch when the modal becomes visible, if it's not the initial load
 watch(() => props.show, (newVal, oldVal) => {
     if (newVal && !oldVal) {
-        // Reset applyRules switch to off when modal re-opens
-        applyRules.value = false;
         fetchPreview();
     }
 });

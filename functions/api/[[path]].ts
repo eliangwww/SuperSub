@@ -426,15 +426,13 @@ subscriptions.post('/', async (c) => {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     await c.env.DB.prepare(
-        `INSERT INTO subscriptions (id, user_id, name, url, type, enabled, updated_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO subscriptions (id, user_id, name, url, updated_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
     ).bind(
         id,
         user.id,
         body.name,
         body.url,
-        body.type || 'plain', // Add default value
-        body.enabled ?? 1,    // Add default value
         now,
         now
     ).run();
@@ -453,9 +451,9 @@ subscriptions.post('/batch-import', async (c) => {
     const stmts = subs.map(sub => {
         const id = crypto.randomUUID();
         return c.env.DB.prepare(
-            `INSERT INTO subscriptions (id, user_id, name, url, type, enabled, updated_at, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).bind(id, user.id, sub.name, sub.url, sub.type || 'plain', sub.enabled ?? 1, now, now);
+            `INSERT INTO subscriptions (id, user_id, name, url, updated_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(id, user.id, sub.name, sub.url, now, now);
     });
 
     await c.env.DB.batch(stmts);
@@ -594,7 +592,7 @@ subscriptions.post('/preview', async (c) => {
 
         if (apply_rules && subscription_id) {
             const { results: rules } = await c.env.DB.prepare(
-                'SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY id ASC'
+                'SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC'
             ).bind(subscription_id, user.id).all();
 
             if (rules && rules.length > 0) {
@@ -754,7 +752,7 @@ subscriptions.post('/:id/update', async (c) => {
 subscriptions.get('/:id/rules', async (c) => {
     const user = c.get('jwtPayload');
     const { id } = c.req.param();
-    const { results } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? ORDER BY id ASC').bind(id, user.id).all();
+    const { results } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? ORDER BY sort_order ASC').bind(id, user.id).all();
     return c.json({ success: true, data: results });
 });
 
@@ -778,11 +776,22 @@ subscriptions.put('/:id/rules/:ruleId', async (c) => {
     const body = await c.req.json<any>();
     const now = new Date().toISOString();
 
-    await c.env.DB.prepare(
-        `UPDATE subscription_rules
-         SET name = ?, type = ?, value = ?, enabled = ?, updated_at = ?
-         WHERE id = ? AND user_id = ?`
-    ).bind(body.name, body.type, body.value, body.enabled ? 1 : 0, now, ruleId, user.id).run();
+    // Check if only 'enabled' or 'sort_order' is being updated for a lighter update
+    if (typeof body.enabled !== 'undefined' && Object.keys(body).length === 1) {
+        await c.env.DB.prepare(
+            `UPDATE subscription_rules SET enabled = ?, updated_at = ? WHERE id = ? AND user_id = ?`
+        ).bind(body.enabled ? 1 : 0, now, ruleId, user.id).run();
+    } else if (typeof body.sort_order !== 'undefined' && Object.keys(body).length === 1) {
+        await c.env.DB.prepare(
+            `UPDATE subscription_rules SET sort_order = ?, updated_at = ? WHERE id = ? AND user_id = ?`
+        ).bind(body.sort_order, now, ruleId, user.id).run();
+    } else {
+        await c.env.DB.prepare(
+            `UPDATE subscription_rules
+             SET name = ?, type = ?, value = ?, enabled = ?, updated_at = ?
+             WHERE id = ? AND user_id = ?`
+        ).bind(body.name, body.type, body.value, body.enabled ? 1 : 0, now, ruleId, user.id).run();
+    }
     
     return c.json({ success: true });
 });
@@ -804,13 +813,11 @@ subscriptions.put('/:id', async (c) => {
     const body = await c.req.json<any>();
     const now = new Date().toISOString();
     await c.env.DB.prepare(
-        `UPDATE subscriptions SET name = ?, url = ?, type = ?, enabled = ?, updated_at = ?
+        `UPDATE subscriptions SET name = ?, url = ?, updated_at = ?
          WHERE id = ? AND user_id = ?`
     ).bind(
         body.name,
         body.url,
-        body.type || 'plain', // Add default value for type
-        body.enabled ?? 1,    // Add default value for enabled
         now,
         id,
         user.id
@@ -864,15 +871,10 @@ profiles.post('/', async (c) => {
     // Ensure content is a string, default to an empty JSON object if not provided.
     const content = typeof body.content === 'string' ? body.content : '{}';
 
-    // Validate client_type
-    if (!body.client_type || typeof body.client_type !== 'string') {
-        return c.json({ success: false, message: 'Client type is required.' }, 400);
-    }
-
     await c.env.DB.prepare(
-        `INSERT INTO profiles (id, user_id, name, client_type, content, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(id, user.id, body.name.trim(), body.client_type, content, now, now).run();
+        `INSERT INTO profiles (id, user_id, name, content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(id, user.id, body.name.trim(), content, now, now).run();
     return c.json({ success: true, data: { id } }, 201);
 });
 
@@ -896,15 +898,10 @@ profiles.put('/:id', async (c) => {
     
     const content = typeof body.content === 'string' ? body.content : '{}';
 
-    // Validate client_type
-    if (!body.client_type || typeof body.client_type !== 'string') {
-        return c.json({ success: false, message: 'Client type is required.' }, 400);
-    }
-
     await c.env.DB.prepare(
-        `UPDATE profiles SET name = ?, client_type = ?, content = ?, updated_at = ?
+        `UPDATE profiles SET name = ?, content = ?, updated_at = ?
          WHERE id = ? AND user_id = ?`
-    ).bind(body.name.trim(), body.client_type, content, now, id, user.id).run();
+    ).bind(body.name.trim(), content, now, id, user.id).run();
     return c.json({ success: true });
 });
 
@@ -918,11 +915,99 @@ profiles.delete('/:id', async (c) => {
 profiles.get('/:id/subscribe', async (c) => {
     // This is a public endpoint, no auth
     const { id } = c.req.param();
-    const profile = await c.env.DB.prepare('SELECT content FROM profiles WHERE id = ?').bind(id).first<{ content: string }>();
+    const profile = await c.env.DB.prepare('SELECT * FROM profiles WHERE id = ?').bind(id).first<any>();
+
     if (!profile) {
         return c.text('Profile not found', 404);
     }
-    return c.text(profile.content);
+
+    try {
+        const content = JSON.parse(profile.content || '{}');
+        const userId = profile.user_id;
+
+        let allNodes: (ParsedNode & { id: string; raw: string; })[] = [];
+
+        // 1. Fetch nodes from subscriptions
+        if (content.subscription_ids && content.subscription_ids.length > 0) {
+            const subIds = content.subscription_ids.join(',');
+            const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, url FROM subscriptions WHERE id IN (${'?,'.repeat(content.subscription_ids.length).slice(0, -1)}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; url: string; }>();
+
+            for (const sub of subscriptions) {
+                try {
+                    const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
+                    if (response.ok) {
+                        const subContent = await response.text();
+                        let nodes = parseSubscriptionContent(subContent);
+
+                        // Apply rules for this specific subscription
+                        const { results: rules } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
+                        if (rules && rules.length > 0) {
+                            nodes = applySubscriptionRules(nodes, rules);
+                        }
+                        allNodes.push(...nodes);
+                    }
+                } catch (e) {
+                    console.error(`Failed to process subscription ${sub.id}:`, e);
+                }
+            }
+        }
+
+        // 2. Fetch manually added nodes
+        if (content.nodeIds && content.nodeIds.length > 0) {
+            const nodeIds = content.nodeIds.join(',');
+            const { results: manualNodes } = await c.env.DB.prepare(`SELECT * FROM nodes WHERE id IN (${'?,'.repeat(content.nodeIds.length).slice(0, -1)}) AND user_id = ?`).bind(...content.nodeIds, userId).all<any>();
+            
+            const parsedManualNodes = manualNodes.map(n => ({
+                id: n.id,
+                name: n.name,
+                protocol: n.protocol,
+                server: n.server,
+                port: n.port,
+                protocol_params: JSON.parse(n.protocol_params || '{}'),
+                link: n.link,
+                raw: n.link,
+            }));
+            allNodes.push(...parsedManualNodes);
+        }
+
+        if (allNodes.length === 0) {
+            return c.text('No nodes found for this profile.', 404);
+        }
+
+        // 3. Generate final config
+        if (content.generation_mode === 'online') {
+            const backend = await c.env.DB.prepare("SELECT url FROM subconverter_assets WHERE id = ?").bind(content.subconverter_backend_id).first<{ url: string }>();
+            const config = await c.env.DB.prepare("SELECT url FROM subconverter_assets WHERE id = ?").bind(content.subconverter_config_id).first<{ url: string }>();
+
+            if (!backend || !config) {
+                return c.text('Subconverter backend or config not found.', 500);
+            }
+
+            // Convert nodes to a format subconverter can understand (e.g., base64 encoded list of links)
+            const nodeLinks = allNodes.map(n => n.link || n.raw).filter(Boolean).join('\n');
+            const encodedNodes = btoa(nodeLinks);
+
+            const targetUrl = new URL(`${backend.url}/sub`);
+            targetUrl.searchParams.set('target', 'clash'); // Target is now determined by the config, but we set a default
+            targetUrl.searchParams.set('url', `data:text/plain;base64,${encodedNodes}`);
+            targetUrl.searchParams.set('config', config.url);
+
+            const subResponse = await fetch(targetUrl.toString(), { headers: { 'User-Agent': 'Clash' } });
+            if (!subResponse.ok) {
+                return c.text(`Failed to generate from subconverter: ${await subResponse.text()}`, 502);
+            }
+            const finalConfig = await subResponse.text();
+            return c.text(finalConfig);
+
+        } else {
+            // Local generation (currently placeholder)
+            return c.text(JSON.stringify(allNodes, null, 2));
+        }
+
+    } catch (e: any) {
+        console.error(`Error generating profile ${id}:`, e);
+        return c.text(`Internal server error: ${e.message}`, 500);
+    }
 });
 
 app.route('/profiles', profiles);
@@ -953,7 +1038,7 @@ app.get('/admin/system-settings', async (c) => {
 // Subconverter Assets routes
 app.get('/subconverter-assets', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
-    const { results } = await c.env.DB.prepare("SELECT * FROM subconverter_assets WHERE user_id = ? OR user_id = 'system-user-001'").bind(user.id).all();
+    const { results } = await c.env.DB.prepare("SELECT *, CASE WHEN is_default = 1 THEN 1 ELSE 0 END as is_default FROM subconverter_assets WHERE user_id = ? OR user_id = 'system-user-001'").bind(user.id).all();
     return c.json({ success: true, data: results });
 });
 
@@ -972,6 +1057,30 @@ app.post('/subconverter-assets', manualAuthMiddleware, async (c) => {
     ).bind(user.id, body.name, body.url, body.type, now, now).run();
 
     return c.json({ success: true, data: { id: meta.last_row_id } }, 201);
+});
+
+app.put('/subconverter-assets/:id/default', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { id } = c.req.param();
+
+    // First, get the type of the asset being set as default
+    const asset = await c.env.DB.prepare("SELECT type FROM subconverter_assets WHERE id = ? AND (user_id = ? OR user_id = 'system-user-001')").bind(id, user.id).first<{ type: string }>();
+
+    if (!asset) {
+        return c.json({ success: false, message: 'Asset not found or permission denied.' }, 404);
+    }
+
+    // Start a transaction
+    const stmts = [
+        // Reset all defaults for this user and this asset type
+        c.env.DB.prepare("UPDATE subconverter_assets SET is_default = 0 WHERE (user_id = ? OR user_id = 'system-user-001') AND type = ?").bind(user.id, asset.type),
+        // Set the new default
+        c.env.DB.prepare("UPDATE subconverter_assets SET is_default = 1 WHERE id = ? AND (user_id = ? OR user_id = 'system-user-001')").bind(id, user.id)
+    ];
+    
+    await c.env.DB.batch(stmts);
+
+    return c.json({ success: true, message: 'Default asset updated successfully.' });
 });
 
 app.put('/subconverter-assets/:id', manualAuthMiddleware, async (c) => {

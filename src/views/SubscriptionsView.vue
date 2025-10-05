@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, h, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags } from 'naive-ui'
+import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup } from 'naive-ui'
 import type { DataTableColumns, FormInst } from 'naive-ui'
-import { Subscription, Node, SubscriptionRule, ApiResponse } from '@/types'
+import { Subscription, Node, ApiResponse, SubconverterAsset } from '@/types'
 import { api } from '@/utils/api'
 import SubscriptionNodesPreview from '@/components/SubscriptionNodesPreview.vue'
 import { format } from 'date-fns'
@@ -47,16 +47,16 @@ const nodePreviewRef = ref<{ fetchPreview: () => void } | null>(null)
 const showRulesModal = ref(false)
 const rulesLoading = ref(false)
 const currentSubscriptionForRules = ref<Subscription | null>(null)
-const subscriptionRules = ref<SubscriptionRule[]>([])
+const subscriptionRules = ref<import('@/types').SubscriptionRule[]>([])
 const showRuleFormModal = ref(false)
 const ruleFormRef = ref<FormInst | null>(null)
-const editingRule = ref<SubscriptionRule | null>(null)
+const editingRule = ref<import('@/types').SubscriptionRule | null>(null)
 const ruleSaveLoading = ref(false)
 
 const ruleFormState = reactive({
   id: 0,
   name: '',
-  type: 'filter_by_name_keyword' as SubscriptionRule['type'] | 'exclude_by_name_keyword',
+  type: 'filter_by_name_keyword' as import('@/types').SubscriptionRule['type'] | 'exclude_by_name_keyword',
   value: '',
   enabled: 1,
   // Fields for user-friendly forms
@@ -108,7 +108,12 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
     onManageRules: (row: Subscription) => void,
 }): DataTableColumns<Subscription> => {
   return [
-    { title: '名称', key: 'name', sorter: 'default' },
+    { title: '名称', key: 'name', sorter: 'default', width: 150 },
+    {
+      title: '订阅链接',
+      key: 'url',
+      ellipsis: { tooltip: true },
+    },
     {
       title: '状态',
       key: 'status',
@@ -172,7 +177,7 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
 
 const openModal = (sub: Subscription | null = null) => {
   if (sub) {
-    editingSubscription.value = sub
+    editingSubscription.value = { ...sub } // Create a shallow copy
     formState.id = sub.id
     formState.name = sub.name
     formState.url = sub.url
@@ -213,7 +218,7 @@ const handleSave = async () => {
       url: formState.url,
     }
     const response = editingSubscription.value
-      ? await api.put<ApiResponse>(`/subscriptions/${formState.id}`, payload)
+      ? await api.put<ApiResponse>(`/subscriptions/${editingSubscription.value.id}`, payload)
       : await api.post<ApiResponse>('/subscriptions', payload)
 
     if (response.data.success) {
@@ -417,7 +422,7 @@ const handleBulkImport = async () => {
 const fetchRules = async (subscriptionId: string) => {
   rulesLoading.value = true
   try {
-    const response = await api.get<ApiResponse<SubscriptionRule[]>>(`/subscriptions/${subscriptionId}/rules`)
+    const response = await api.get<ApiResponse<import('@/types').SubscriptionRule[]>>(`/subscriptions/${subscriptionId}/rules`)
     if (response.data.success) {
       subscriptionRules.value = response.data.data || []
     } else {
@@ -436,7 +441,7 @@ const onManageRules = (sub: Subscription) => {
   fetchRules(sub.id)
 }
 
-const handleDeleteRule = (rule: SubscriptionRule) => {
+const handleDeleteRule = (rule: import('@/types').SubscriptionRule) => {
   if (!currentSubscriptionForRules.value) return
   const subId = currentSubscriptionForRules.value.id
 
@@ -461,7 +466,7 @@ const handleDeleteRule = (rule: SubscriptionRule) => {
   })
 }
 
-const openRuleFormModal = (rule: SubscriptionRule | null) => {
+const openRuleFormModal = (rule: import('@/types').SubscriptionRule | null) => {
   // Reset all fields first
   ruleFormState.id = 0
   ruleFormState.name = ''
@@ -556,9 +561,9 @@ const handleSaveRule = async () => {
 }
 
 const createRuleColumns = ({ onEdit, onDelete }: {
-    onEdit: (row: SubscriptionRule) => void,
-    onDelete: (row: SubscriptionRule) => void,
-}): DataTableColumns<SubscriptionRule> => {
+    onEdit: (row: import('@/types').SubscriptionRule) => void,
+    onDelete: (row: import('@/types').SubscriptionRule) => void,
+}): DataTableColumns<import('@/types').SubscriptionRule> => {
   return [
     { title: '名称', key: 'name', width: 150 },
     {
@@ -584,7 +589,7 @@ const createRuleColumns = ({ onEdit, onDelete }: {
             const subId = currentSubscriptionForRules.value.id
             row.enabled = value ? 1 : 0
             try {
-              await api.put<ApiResponse>(`/api/subscriptions/${subId}/rules/${row.id}`, { enabled: value })
+              await api.put<ApiResponse>(`/subscriptions/${subId}/rules/${row.id}`, { enabled: value })
               message.success('状态更新成功')
             } catch (e) {
               message.error('状态更新失败')
@@ -616,6 +621,8 @@ const ruleColumns = createRuleColumns({
 })
 
 // --- End of Subscription Rules Logic ---
+
+// --- End of Conversion Link Generation Logic ---
 
 const columns = createColumns({
     onEdit: openModal,
@@ -754,6 +761,7 @@ onMounted(fetchSubscriptions)
         </n-space>
       </template>
     </n-modal>
+
   </div>
     <n-modal
       v-model:show="showNodePreviewModal"

@@ -2,9 +2,9 @@
 import { ref, onMounted, reactive, computed, h } from 'vue';
 import axios from 'axios';
 import { useRouter } from 'vue-router';
-import { useMessage, useDialog, NButton, NSpace, NCode, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NSpin, NIcon, NDynamicInput, NSelect, NRadioGroup, NRadioButton, NDivider, NSteps, NStep, NCard, NList, NListItem, NThing, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar } from 'naive-ui';
+import { useMessage, useDialog, NButton, NSpace, NCode, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NSpin, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar } from 'naive-ui';
 import type { DataTableColumns, FormInst } from 'naive-ui';
-import { AnalyticsOutline as LogsIcon, Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon, DownloadOutline as DownloadIcon, FunnelOutline as PipelineIcon, SettingsOutline as SettingsIcon } from '@vicons/ionicons5';
+import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon } from '@vicons/ionicons5';
 import { api } from '@/utils/api';
 import type { ApiResponse, Profile, Subscription, Node, ConfigTemplate } from '@/types';
 
@@ -25,18 +25,14 @@ const showEditModal = ref(false);
 const saveLoading = ref(false);
 const editingProfile = ref<Profile | null>(null);
 const formRef = ref<FormInst | null>(null);
-const currentStep = ref(1);
-const stepStatus = ref<'process' | 'finish' | 'error'>('process');
 
 const formState = reactive({
   id: '',
   name: '',
   description: '',
-  alias: '',
-  client_type: 'CLASH' as 'CLASH' | 'SURGE' | 'QUANTUMULT_X' | 'V2RAYN' | 'GENERIC',
+alias: '',
+  // generation_mode is now fixed to 'online'
   generation_mode: 'online' as 'local' | 'online',
-  template_id: null as number | null,
-  template_variables: [] as { key: string, value: string }[],
   subconverter_backend_id: null as number | null,
   subconverter_config_id: null as number | null,
   subscription_ids: [] as string[],
@@ -117,28 +113,15 @@ const rules = {
     message: '请输入名称',
     trigger: ['input', 'blur'],
   },
-  client_type: {
-    required: true,
-    message: '请选择客户端类型',
-    trigger: 'change',
-  },
 };
 
 // For Logs Modal
 
 const modalTitle = computed(() => (editingProfile.value ? '编辑配置' : '新增配置'));
 
-const clientTypeOptions = [
-  { label: 'Clash', value: 'CLASH' },
-  { label: 'Surge', value: 'SURGE' },
-  { label: 'Quantumult X', value: 'QUANTUMULT_X' },
-  { label: 'V2RayN', value: 'V2RAYN' },
-  { label: 'Generic', value: 'GENERIC' },
-];
 
 const subscriptionOptions = computed(() => allSubscriptions.value.map(s => ({ label: s.name, value: s.id })));
 const nodeOptions = computed(() => allNodes.value.map(n => ({ label: n.name, value: n.id })));
-const templateOptions = computed(() => allTemplates.value.map(t => ({ label: t.name, value: t.id })));
 const backendOptions = computed(() => allBackends.value.map(b => ({ label: b.name, value: b.id })));
 const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name, value: c.id })));
 
@@ -158,24 +141,39 @@ const copyGeneratedUrl = () => {
   }
 };
 
-const createColumns = ({ onCopy, onPreview, onDownload, onEdit, onDelete, onManagePipeline }: {
+const createColumns = ({ onCopy, onPreview, onEdit, onDelete }: {
     onCopy: (row: Profile) => void,
     onPreview: (row: Profile) => void,
-    onDownload: (row: Profile) => void,
     onEdit: (row: Profile) => void,
     onDelete: (row: Profile) => void,
-    onManagePipeline: (row: Profile) => void,
 }): DataTableColumns<Profile> => {
   return [
     { title: '名称', key: 'name', sorter: 'default', width: 200 },
-    { title: '客户端', key: 'client_type', width: 120 },
     { title: '描述', key: 'description', ellipsis: { tooltip: true } },
     {
       title: '订阅链接',
       key: 'alias',
       render(row) {
-        if (!row.alias) return h('span', {}, '-');
-        const url = `${window.location.origin}/sub/${row.alias}`;
+        let alias = row.alias;
+        try {
+          if (row.content) {
+            const contentData = JSON.parse(row.content);
+            if (contentData.alias) {
+              alias = contentData.alias;
+            }
+          }
+        } catch (e) {
+          // Ignore parsing errors
+        }
+
+        const url = alias
+          ? `${window.location.origin}/sub/${alias}`
+          : `${window.location.origin}/api/profiles/${row.id}/generate`;
+        
+        if (!alias) {
+            return h('span', { style: 'color: #999; font-style: italic;' }, '无别名，使用ID生成');
+        }
+
         return h(NButton, {
           text: true,
           tag: 'a',
@@ -188,11 +186,10 @@ const createColumns = ({ onCopy, onPreview, onDownload, onEdit, onDelete, onMana
     {
       title: '操作',
       key: 'actions',
-      width: 360,
+      width: 200,
       render(row) {
         return h(NSpace, null, {
           default: () => [
-            h(NButton, { size: 'small', circle: true, title: '管理处理规则', onClick: () => onManagePipeline(row) }, { icon: () => h(NIcon, null, { default: () => h(PipelineIcon) }) }),
             h(NButton, { size: 'small', circle: true, title: '复制链接', onClick: () => onCopy(row) }, { icon: () => h(NIcon, null, { default: () => h(CopyIcon) }) }),
             h(NButton, { size: 'small', circle: true, title: '预览', onClick: () => onPreview(row) }, { icon: () => h(NIcon, null, { default: () => h(PreviewIcon) }) }),
             h(NButton, { size: 'small', circle: true, type: 'primary', title: '编辑', onClick: () => onEdit(row) }, { icon: () => h(NIcon, null, { default: () => h(EditIcon) }) }),
@@ -205,46 +202,47 @@ const createColumns = ({ onCopy, onPreview, onDownload, onEdit, onDelete, onMana
 };
 
 const openEditModal = async (profile: Profile | null = null) => {
-  // Reset step to the beginning
-  currentStep.value = 1;
-  stepStatus.value = 'process';
-
   // Fetch all available sources first
   await fetchAllSources();
 
   if (profile) {
     editingProfile.value = profile;
+    
+    // Safely parse the content field
+    let contentData = { alias: '', description: '', subconverter_backend_id: null, subconverter_config_id: null, subscription_ids: [], nodeIds: [] };
+    try {
+      if (profile.content) {
+        contentData = { ...contentData, ...JSON.parse(profile.content) };
+      }
+    } catch (e) {
+      console.error("Failed to parse profile content:", e);
+    }
+
     // The profile object is now expanded on the backend, so we can access properties directly.
     formState.id = profile.id;
     formState.name = profile.name;
-    formState.description = profile.description || '';
-    formState.alias = profile.alias || '';
-    formState.client_type = profile.client_type || 'CLASH';
-    formState.generation_mode = profile.generation_mode || 'online';
-    formState.template_id = profile.template_id ? Number(profile.template_id) : null;
-    formState.subconverter_backend_id = profile.subconverter_backend_id || null;
-    formState.subconverter_config_id = profile.subconverter_config_id || null;
-    formState.subscription_ids = profile.subscription_ids || [];
-    formState.nodeIds = profile.nodeIds || [];
+    formState.description = contentData.description || profile.description || '';
+    formState.alias = contentData.alias || profile.alias || '';
+    formState.generation_mode = 'online'; // Always online
+    formState.subconverter_backend_id = contentData.subconverter_backend_id || profile.subconverter_backend_id || null;
+    formState.subconverter_config_id = contentData.subconverter_config_id || profile.subconverter_config_id || null;
+    formState.subscription_ids = contentData.subscription_ids || profile.subscription_ids || [];
+    formState.nodeIds = contentData.nodeIds || profile.nodeIds || [];
 
-    // Handle template_variables, which might be an object
-    if (profile.template_variables && typeof profile.template_variables === 'object') {
-        formState.template_variables = Object.entries(profile.template_variables).map(([key, value]) => ({ key, value: String(value) }));
-    } else {
-        formState.template_variables = [];
-    }
   } else {
     editingProfile.value = null;
     formState.id = '';
     formState.name = '';
     formState.description = '';
     formState.alias = '';
-    formState.client_type = 'CLASH';
     formState.generation_mode = 'online';
-    formState.template_id = null;
-    formState.template_variables = [];
-    formState.subconverter_backend_id = null;
-    formState.subconverter_config_id = null;
+    
+    // Auto-select default backend and config
+    const defaultBackend = allBackends.value.find(b => b.is_default);
+    const defaultConfig = allConfigs.value.find(c => c.is_default);
+    formState.subconverter_backend_id = defaultBackend ? defaultBackend.id : null;
+    formState.subconverter_config_id = defaultConfig ? defaultConfig.id : null;
+
     formState.subscription_ids = [];
     formState.nodeIds = [];
   }
@@ -298,54 +296,49 @@ const fetchAllSources = async () => {
 };
 
 const handleSave = async () => {
-  saveLoading.value = true;
-  try {
-    // Convert template_variables from object array to a simple object
-    const variablesObject = formState.template_variables.reduce((acc, item) => {
-      if (item.key) {
-        acc[item.key] = item.value;
+  formRef.value?.validate(async (errors) => {
+    if (errors) {
+      message.error('请填写所有必填项');
+      return;
+    }
+    saveLoading.value = true;
+    try {
+      // Consolidate all profile settings into a single 'content' object
+      const contentPayload = {
+        description: formState.description,
+        alias: formState.alias || null,
+        generation_mode: 'online', // Hardcoded to online
+        subconverter_backend_id: formState.subconverter_backend_id,
+        subconverter_config_id: formState.subconverter_config_id,
+        subscription_ids: formState.subscription_ids,
+        nodeIds: formState.nodeIds,
+      };
+
+      // The final payload sent to the backend
+      const payload = {
+        name: formState.name,
+        content: JSON.stringify(contentPayload), // All details are in 'content'
+      };
+
+      const response = editingProfile.value
+        ? await api.put<ApiResponse>(`/profiles/${formState.id}`, payload)
+        : await api.post<ApiResponse>('/profiles', payload);
+
+      if (response.data.success) {
+        message.success(editingProfile.value ? '配置更新成功' : '配置新增成功');
+        showEditModal.value = false;
+        fetchProfiles();
+      } else {
+        message.error(response.data.message || '保存失败');
       }
-      return acc;
-    }, {} as Record<string, string>);
-
-    // Consolidate all profile settings into a single 'content' object
-    const contentPayload = {
-      description: formState.description,
-      alias: formState.alias || null,
-      generation_mode: formState.generation_mode,
-      template_id: formState.template_id,
-      template_variables: variablesObject, // Store as object, not string
-      subconverter_backend_id: formState.subconverter_backend_id,
-      subconverter_config_id: formState.subconverter_config_id,
-      subscription_ids: formState.subscription_ids,
-      nodeIds: formState.nodeIds,
-    };
-
-    // The final payload sent to the backend
-    const payload = {
-      name: formState.name,
-      client_type: formState.client_type,
-      content: JSON.stringify(contentPayload), // All details are in 'content'
-    };
-
-    const response = editingProfile.value
-      ? await api.put<ApiResponse>(`/profiles/${formState.id}`, payload)
-      : await api.post<ApiResponse>('/profiles', payload);
-
-    if (response.data.success) {
-      message.success(editingProfile.value ? '配置更新成功' : '配置新增成功');
-      showEditModal.value = false;
-      fetchProfiles();
-    } else {
-      message.error(response.data.message || '保存失败');
+    } catch (err: any) {
+      if (!axios.isCancel(err)) {
+        message.error(err.message || '请求失败，请稍后重试');
+      }
+    } finally {
+      saveLoading.value = false;
     }
-  } catch (err: any) {
-    if (!axios.isCancel(err)) {
-      message.error(err.message || '请求失败，请稍后重试');
-    }
-  } finally {
-    saveLoading.value = false;
-  }
+  });
 };
 
 const handleDelete = (row: Profile) => {
@@ -373,8 +366,20 @@ const handleDelete = (row: Profile) => {
 };
 
 const handleCopyLink = (row: Profile) => {
-  const url = row.alias
-    ? `${window.location.origin}/sub/${row.alias}`
+  let alias = row.alias;
+  try {
+    if (row.content) {
+      const contentData = JSON.parse(row.content);
+      if (contentData.alias) {
+        alias = contentData.alias;
+      }
+    }
+  } catch (e) {
+    // Ignore parsing errors
+  }
+
+  const url = alias
+    ? `${window.location.origin}/sub/${alias}`
     : `${window.location.origin}/api/profiles/${row.id}/generate`;
   
   navigator.clipboard.writeText(url).then(() => {
@@ -405,99 +410,14 @@ const handlePreview = async (row: Profile) => {
   }
 };
 
-const handleDownload = async (row: Profile) => {
-  message.info('正在准备下载...');
-  try {
-    const response = await api.get<string>(`/profiles/${row.id}/generate`);
-    const textContent = response.data;
-    if (textContent) {
-      const decodedContent = atob(textContent);
-      const blob = new Blob([decodedContent], { type: 'text/plain;charset=utf-8' });
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `${row.name || 'profile'}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(link.href);
-      message.success('下载已开始');
-    } else {
-      throw new Error('下载内容为空');
-    }
-  } catch (err: any) {
-    if (!axios.isCancel(err)) {
-      message.error(err.message || '准备下载失败');
-    }
-  }
-};
-
-
-const handleManagePipeline = (row: Profile) => {
-  router.push({ name: 'profile-pipeline', params: { id: row.id } });
-};
-
 const columns = createColumns({
     onCopy: handleCopyLink,
     onPreview: handlePreview,
-    onDownload: handleDownload,
     onEdit: openEditModal,
     onDelete: handleDelete,
-    onManagePipeline: handleManagePipeline,
 });
 
 onMounted(fetchProfiles);
-
-const prevStep = () => {
-  if (currentStep.value > 1) {
-    currentStep.value--;
-    stepStatus.value = 'process';
-  }
-};
-
-const nextStep = () => {
-  const validateAndProceed = (fieldsToValidate: string[]) => {
-    formRef.value?.validate(
-      (errors) => {
-        if (!errors) {
-          if (currentStep.value < 4) {
-            currentStep.value++;
-            stepStatus.value = 'process';
-          }
-        } else {
-          stepStatus.value = 'error';
-          message.error('请填写所有必填项后再继续');
-        }
-      },
-      (rule) => fieldsToValidate.includes(rule?.key as string)
-    ).catch(() => {
-      stepStatus.value = 'error';
-    });
-  };
-
-  switch (currentStep.value) {
-    case 1:
-      validateAndProceed(['name', 'client_type']);
-      break;
-    case 2:
-      // No validation needed for step 2, just proceed
-      if (currentStep.value < 4) {
-        currentStep.value++;
-        stepStatus.value = 'process';
-      }
-      break;
-    case 3:
-      // Add validation for step 3 if needed in the future
-      if (currentStep.value < 4) {
-        currentStep.value++;
-        stepStatus.value = 'process';
-      }
-      break;
-    default:
-      if (currentStep.value < 4) {
-        currentStep.value++;
-      }
-  }
-};
 
 </script>
 
@@ -526,25 +446,17 @@ const nextStep = () => {
       v-model:show="showEditModal"
       preset="card"
       :title="modalTitle"
-      style="width: 900px;"
+      style="width: 1000px;"
       class="profile-builder-modal"
     >
-      <n-steps :current="currentStep" :status="stepStatus" class="mb-6">
-        <n-step title="基本信息" />
-        <n-step title="数据源" />
-        <n-step title="生成规则" />
-        <n-step title="完成" />
-      </n-steps>
-
       <n-form ref="formRef" :model="formState" :rules="rules">
-        <!-- Step 1: Basic Info -->
-        <div v-if="currentStep === 1">
+        <n-grid :cols="2" :x-gap="24">
+          <!-- Left Column -->
+          <n-gi>
+            <n-divider title-placement="left">基本信息</n-divider>
             <n-form-item label="名称" path="name">
               <n-input v-model:value="formState.name" />
             </n-form-item>
-           <n-form-item label="客户端类型" path="client_type">
-             <n-select v-model:value="formState.client_type" :options="clientTypeOptions" />
-           </n-form-item>
             <n-form-item label="描述">
               <n-input v-model:value="formState.description" />
             </n-form-item>
@@ -560,116 +472,80 @@ const nextStep = () => {
                   </template>
                 </n-input>
             </n-form-item>
-        </div>
 
-        <!-- Step 2: Data Sources -->
-        <div v-if="currentStep === 2">
-          <n-divider title-placement="left">数据源</n-divider>
-          <n-grid :cols="2" :x-gap="24">
-            <n-gi>
-              <n-card title="包含的订阅" size="small" :bordered="true">
-                <template #header-extra>
-                  <n-space>
-                    <n-checkbox
-                      :checked="isAllSubsSelected"
-                      :indeterminate="isSubsIndeterminate"
-                      @update:checked="handleSelectAllSubs"
-                    >
-                      全选
-                    </n-checkbox>
-                    <n-input v-model:value="subFilter" size="small" placeholder="筛选" clearable />
-                  </n-space>
-                </template>
-                <n-scrollbar style="max-height: 300px;">
-                  <n-checkbox-group v-model:value="formState.subscription_ids">
-                    <n-space vertical>
-                      <n-checkbox v-for="sub in filteredSubscriptionOptions" :key="sub.value" :value="sub.value" :label="sub.label" />
-                    </n-space>
-                  </n-checkbox-group>
-                </n-scrollbar>
-              </n-card>
-            </n-gi>
-            <n-gi>
-              <n-card title="包含的节点" size="small" :bordered="true">
-                <template #header-extra>
-                  <n-space>
-                    <n-checkbox
-                      :checked="isAllNodesSelected"
-                      :indeterminate="isNodesIndeterminate"
-                      @update:checked="handleSelectAllNodes"
-                    >
-                      全选
-                    </n-checkbox>
-                    <n-input v-model:value="nodeFilter" size="small" placeholder="筛选" clearable />
-                  </n-space>
-                </template>
-                <n-scrollbar style="max-height: 300px;">
-                  <n-checkbox-group v-model:value="formState.nodeIds">
-                    <n-space vertical>
-                      <n-checkbox v-for="node in filteredNodeOptions" :key="node.value" :value="node.value" :label="node.label" />
-                    </n-space>
-                  </n-checkbox-group>
-                </n-scrollbar>
-              </n-card>
-            </n-gi>
-          </n-grid>
-        </div>
-
-        <!-- Step 3: Generation Settings -->
-        <div v-if="currentStep === 3">
-            <n-divider title-placement="left">生成设置</n-divider>
-            <n-form-item label="生成模式">
-                <n-radio-group v-model:value="formState.generation_mode" name="generation_mode">
-                    <n-radio-button value="online">在线转换</n-radio-button>
-                    <n-radio-button value="local">本地模板</n-radio-button>
-                </n-radio-group>
+            <n-divider title-placement="left">生成设置 (在线转换)</n-divider>
+             <n-form-item label="转换后端">
+              <n-select
+                v-model:value="formState.subconverter_backend_id"
+                :options="backendOptions"
+                placeholder="留空则使用全局默认后端"
+                clearable
+              />
             </n-form-item>
+            <n-form-item label="转换配置">
+              <n-select
+                v-model:value="formState.subconverter_config_id"
+                :options="configOptions"
+                placeholder="留空则使用全局默认配置"
+                clearable
+              />
+            </n-form-item>
+          </n-gi>
 
-            <template v-if="formState.generation_mode === 'local'">
-              <n-form-item label="配置模板" required>
-                <n-select
-                  v-model:value="formState.template_id"
-                  :options="templateOptions"
-                  placeholder="选择一个配置模板"
-                />
-              </n-form-item>
-              <n-form-item label="模板变量">
-                <n-dynamic-input v-model:value="formState.template_variables" preset="pair" key-placeholder="变量名" value-placeholder="变量值" />
-              </n-form-item>
-            </template>
-
-            <template v-if="formState.generation_mode === 'online'">
-                <n-form-item label="转换后端">
-                  <n-select
-                    v-model:value="formState.subconverter_backend_id"
-                    :options="backendOptions"
-                    placeholder="留空则使用全局默认后端"
-                    clearable
-                  />
-                </n-form-item>
-                <n-form-item label="转换配置">
-                  <n-select
-                    v-model:value="formState.subconverter_config_id"
-                    :options="configOptions"
-                    placeholder="留空则使用全局默认配置"
-                    clearable
-                  />
-                </n-form-item>
-            </template>
-        </div>
-
-        <!-- Step 4: Finish -->
-        <div v-if="currentStep === 4">
-            <p>完成</p>
-        </div>
+          <!-- Right Column -->
+          <n-gi>
+            <n-divider title-placement="left">数据源</n-divider>
+            <n-card title="包含的订阅" size="small" :bordered="true" class="mb-4">
+              <template #header-extra>
+                <n-space>
+                  <n-checkbox
+                    :checked="isAllSubsSelected"
+                    :indeterminate="isSubsIndeterminate"
+                    @update:checked="handleSelectAllSubs"
+                  >
+                    全选
+                  </n-checkbox>
+                  <n-input v-model:value="subFilter" size="small" placeholder="筛选" clearable />
+                </n-space>
+              </template>
+              <n-scrollbar style="max-height: 200px;">
+                <n-checkbox-group v-model:value="formState.subscription_ids">
+                  <n-space vertical>
+                    <n-checkbox v-for="sub in filteredSubscriptionOptions" :key="sub.value" :value="sub.value" :label="sub.label" />
+                  </n-space>
+                </n-checkbox-group>
+              </n-scrollbar>
+            </n-card>
+            
+            <n-card title="包含的节点" size="small" :bordered="true">
+              <template #header-extra>
+                <n-space>
+                  <n-checkbox
+                    :checked="isAllNodesSelected"
+                    :indeterminate="isNodesIndeterminate"
+                    @update:checked="handleSelectAllNodes"
+                  >
+                    全选
+                  </n-checkbox>
+                  <n-input v-model:value="nodeFilter" size="small" placeholder="筛选" clearable />
+                </n-space>
+              </template>
+              <n-scrollbar style="max-height: 200px;">
+                <n-checkbox-group v-model:value="formState.nodeIds">
+                  <n-space vertical>
+                    <n-checkbox v-for="node in filteredNodeOptions" :key="node.value" :value="node.value" :label="node.label" />
+                  </n-space>
+                </n-checkbox-group>
+              </n-scrollbar>
+            </n-card>
+          </n-gi>
+        </n-grid>
       </n-form>
 
       <template #footer>
         <n-space justify="end">
           <n-button @click="showEditModal = false">取消</n-button>
-          <n-button v-if="currentStep > 1" @click="prevStep">上一步</n-button>
-          <n-button v-if="currentStep < 4" type="primary" @click="nextStep">下一步</n-button>
-          <n-button v-if="currentStep === 4" type="primary" :loading="saveLoading" @click="handleSave">完成</n-button>
+          <n-button type="primary" :loading="saveLoading" @click="handleSave">保存</n-button>
         </n-space>
       </template>
     </n-modal>

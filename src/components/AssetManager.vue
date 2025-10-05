@@ -31,8 +31,9 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, h, reactive } from 'vue';
 import {
-  NButton, NDataTable, NSpace, NModal, NCard, NForm, NFormItem, NInput, useMessage, NPopconfirm
+  NButton, NDataTable, NSpace, NModal, NCard, NForm, NFormItem, NInput, useMessage, NPopconfirm, NIcon, NTooltip
 } from 'naive-ui';
+import { Star as StarIcon } from '@vicons/ionicons5';
 import type { DataTableColumns } from 'naive-ui';
 import { api } from '@/utils/api';
 
@@ -41,6 +42,7 @@ type SubconverterAsset = {
   name: string;
   url: string;
   type: 'backend' | 'config';
+  is_default?: 0 | 1;
 };
 
 const props = defineProps<{
@@ -63,6 +65,7 @@ const defaultAsset: SubconverterAsset = {
   name: '',
   url: '',
   type: props.assetType,
+  is_default: 0,
 };
 
 const currentAsset = ref<SubconverterAsset>({ ...defaultAsset });
@@ -130,7 +133,32 @@ const handleDelete = async (id: number) => {
   }
 };
 
+const handleSetDefault = async (id: number) => {
+  try {
+    await api.put(`/subconverter-assets/${id}/default`);
+    message.success('默认设置成功');
+    await fetchAssets();
+  } catch (error) {
+    message.error('设置默认失败');
+  }
+};
+
 const createColumns = (): DataTableColumns<SubconverterAsset> => [
+  {
+    title: '默认',
+    key: 'is_default',
+    width: 60,
+    align: 'center',
+    render(row) {
+      if (row.is_default) {
+        return h(NTooltip, null, {
+          trigger: () => h(NIcon, { component: StarIcon, color: '#fdd835', size: 20 }),
+          default: () => '当前默认项'
+        });
+      }
+      return '';
+    }
+  },
   {
     title: '名称',
     key: 'name',
@@ -146,18 +174,24 @@ const createColumns = (): DataTableColumns<SubconverterAsset> => [
     title: '操作',
     key: 'actions',
     render(row) {
-      return h(NSpace, null, {
-        default: () => [
-          h(NButton, { size: 'small', onClick: () => openModal(row) }, { default: () => '编辑' }),
-          h(NPopconfirm,
-            { onPositiveClick: () => handleDelete(row.id) },
-            {
-              trigger: () => h(NButton, { size: 'small', type: 'error' }, { default: () => '删除' }),
-              default: () => '确定要删除这个资源吗？'
-            }
-          ),
-        ],
-      });
+      const actions = [
+        h(NButton, { size: 'small', onClick: () => openModal(row) }, { default: () => '编辑' }),
+        h(NPopconfirm,
+          { onPositiveClick: () => handleDelete(row.id) },
+          {
+            trigger: () => h(NButton, { size: 'small', type: 'error', ghost: true }, { default: () => '删除' }),
+            default: () => '确定要删除这个资源吗？'
+          }
+        ),
+      ];
+
+      if (!row.is_default) {
+        actions.unshift(
+          h(NButton, { size: 'small', type: 'primary', ghost: true, onClick: () => handleSetDefault(row.id) }, { default: () => '设为默认' })
+        );
+      }
+
+      return h(NSpace, null, { default: () => actions });
     },
   },
 ];
