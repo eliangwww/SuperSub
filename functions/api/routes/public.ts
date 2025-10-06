@@ -1,10 +1,11 @@
 import { Buffer } from 'node:buffer';
+import type { Env, AppContext } from '../utils/types';
 import { Hono } from 'hono';
-import type { Env } from '../utils/types';
 import { userAgents, parseSubscriptionContent, applySubscriptionRules } from './subscriptions';
 import { regenerateLink } from '../../../src/utils/nodeParser';
+import { sendTelegramMessage } from '../utils/telegram';
 
-const publicRoutes = new Hono<{ Bindings: Env }>();
+const publicRoutes = new Hono<AppContext>();
 
 // This is the main subscription route
 publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
@@ -22,35 +23,96 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
         return c.text('Profile not found', 404);
     }
 
+    let format = 'Unknown';
+    // Send Telegram notification
+    try {
+        const userAgent = c.req.header('user-agent') || 'N/A';
+        const ip = c.req.header('cf-connecting-ip') || 'N/A';
+        const cf = c.req.raw.cf as any;
+
+        const country = cf?.country || 'N/A';
+        const city = cf?.city || 'N/A';
+        const isp = cf?.asOrganization || 'N/A';
+        const asn = `AS${cf?.asn || 'N/A'}`;
+        
+        const domain = new URL(c.req.url).hostname;
+        
+        let client = userAgent; // Default to full user-agent
+        const uaLower = userAgent.toLowerCase();
+
+        if (uaLower.includes('clash')) {
+            client = userAgent.match(/clash-verge\/[v\d.]+|clash-meta\/[v\d.]+|clash\/[v\d.]+/i)?.[0] || client;
+            format = 'clash';
+        } else if (uaLower.includes('surge')) {
+            client = userAgent.match(/surge\/[v\d.]+/i)?.[0] || client;
+            format = 'surge';
+        } else if (uaLower.includes('quantumult')) {
+            client = userAgent.match(/quantumult%20x\/[v\d.]+|quantumult\/[v\d.]+/i)?.[0] || client;
+            format = 'quantumult';
+        } else if (uaLower.includes('sing-box')) {
+            client = userAgent.match(/sing-box\/[v\d.]+/i)?.[0] || client;
+            format = 'sing-box';
+        }
+        
+        // Default to base64 if no specific client is detected (e.g., browser access)
+        if (format === 'Unknown') {
+            format = 'base64';
+        }
+
+        const now = new Date(new Date().getTime() + 8 * 3600 * 1000);
+        const time = now.toISOString().replace('T', ' ').substring(0, 19);
+
+        const message = [
+            `🚀 <b>订阅被访问</b>`,
+            ``,
+            `<b>IP 地址:</b> ${ip}`,
+            `<b>国家:</b> ${country}`,
+            `<b>城市:</b> ${city}`,
+            `<b>ISP:</b> ${isp}`,
+            `<b>ASN:</b> ${asn}`,
+            ``,
+            `<b>域名:</b> ${domain}`,
+            `<b>客户端:</b> ${client}`,
+            `<b>请求格式:</b> ${format}`,
+            `<b>订阅组:</b> ${profile.name}`,
+            ``,
+            `<b>时间:</b> ${time} (UTC+8)`
+        ].join('\n');
+
+        await sendTelegramMessage(c.env, profile.user_id, message);
+    } catch (error: any) {
+        console.error(`Failed to send Telegram notification: ${error.message}`);
+    }
+
     try {
         const content = JSON.parse(profile.content || '{}');
         const userId = profile.user_id;
 
-        let allNodes: any[] = [];
+    let allNodes: any[] = [];
 
-        if (content.subscription_ids && content.subscription_ids.length > 0) {
-            const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
-            const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
+    if (content.subscription_ids && content.subscription_ids.length > 0) {
+        const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
+        const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
 
-            for (const sub of subscriptions) {
-                try {
-                    const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
-                    if (response.ok) {
-                        const subContent = await response.text();
-                        let nodes = parseSubscriptionContent(subContent);
+        for (const sub of subscriptions) {
+            try {
+                const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
+                if (response.ok) {
+                    const subContent = await response.text();
+                    let nodes = parseSubscriptionContent(subContent);
 
-                        const { results: rules } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
-                        if (rules && rules.length > 0) {
-                            nodes = applySubscriptionRules(nodes, rules);
-                        }
-                        const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
-                        allNodes.push(...nodesWithSubName);
+                    const { results: rules } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
+                    if (rules && rules.length > 0) {
+                        nodes = applySubscriptionRules(nodes, rules);
                     }
-                } catch (e) {
-                    console.error(`Failed to process subscription ${sub.id}:`, e);
+                    const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
+                    allNodes.push(...nodesWithSubName);
                 }
+            } catch (e: any) {
+                console.error(`Failed to process subscription ${sub.id}:`, e);
             }
         }
+    }
 
         if (content.node_ids && content.node_ids.length > 0) {
             const nodePlaceholders = content.node_ids.map(() => '?').join(',');
@@ -168,6 +230,9 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
         } else {
             // Local generation (base64) for browsers or when online mode is off
             const base64Content = Buffer.from(regeneratedLinks, 'utf-8').toString('base64');
+            if (format === 'Unknown') {
+                format = 'base64';
+            }
             return c.text(base64Content);
         }
 

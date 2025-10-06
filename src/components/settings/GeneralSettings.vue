@@ -153,9 +153,7 @@ const handleSave = async () => {
 const handleTestTelegram = async () => {
   testLoading.value = true;
   try {
-    await api.post('/settings/test-telegram', {
-      message: '这是一条来自 SuperSub 的测试消息！'
-    });
+    await api.post('/system/settings/test-telegram');
     message.success('测试消息已发送，请检查您的 Telegram');
   } catch (error: any) {
     message.error(error.response?.data?.message || '发送测试消息失败');
