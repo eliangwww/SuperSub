@@ -317,7 +317,7 @@ subscriptions.post('/:id/update', async (c) => {
     try {
         const response = await fetch(subscription.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
         if (!response.ok) {
-            const error = `Failed to fetch: ${response.statusText}`;
+            const error = `Failed to fetch: ${response.status} ${response.statusText}`;
             await c.env.DB.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), error, id).run();
             return c.json({ success: false, message: error }, 502);
         }
