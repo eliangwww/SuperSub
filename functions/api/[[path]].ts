@@ -21,8 +21,6 @@ export const app = new Hono<{ Bindings: Env }>();
 // Middleware
 app.use('/api/*', methodOverrideMiddleware(app));
 
-// Public subscription routes
-app.route('/s', publicRoutes);
 
 // API routes
 const api = app.basePath('/api');
@@ -30,6 +28,7 @@ const api = app.basePath('/api');
 // Public API routes
 api.route('/auth', authRoutes);
 api.route('/system', systemRoutes);
+api.route('/public', publicRoutes);
 
 // Authenticated API routes
 api.route('/nodes', nodeRoutes);

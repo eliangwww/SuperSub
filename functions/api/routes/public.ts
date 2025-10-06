@@ -1,10 +1,12 @@
+import { Buffer } from 'node:buffer';
 import { Hono } from 'hono';
 import type { Env } from '../utils/types';
 import { userAgents, parseSubscriptionContent, applySubscriptionRules } from './subscriptions';
 
 const publicRoutes = new Hono<{ Bindings: Env }>();
 
-publicRoutes.get('/:sub_token/:profile_alias/subscribe', async (c) => {
+// This is the main subscription route
+publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
     const { sub_token, profile_alias } = c.req.param();
 
     // 1. Find user by sub_token
@@ -84,7 +86,37 @@ publicRoutes.get('/:sub_token/:profile_alias/subscribe', async (c) => {
             });
         }
 
-        if (content.generation_mode === 'online') {
+        const userAgent = c.req.header('User-Agent') || '';
+        const query = c.req.query();
+        const nodeLinks = allNodes.map(n => n.link || n.raw).filter(Boolean).join('\n');
+
+        // If the request asks for base64, return it directly. This is for subconverter to fetch.
+        if (query.b64) {
+            const base64Content = Buffer.from(nodeLinks, 'utf-8').toString('base64');
+            return c.text(base64Content);
+        }
+
+        // 1. Determine target client from UA and query parameters
+        let targetClient = 'base64'; // Default to base64
+        if (query.clash) targetClient = 'clash';
+        if (query.singbox || query.sb) targetClient = 'singbox';
+        if (query.surge) targetClient = 'surge';
+        if (query.v2ray) targetClient = 'v2ray';
+
+        // If no query param, try to detect from User-Agent
+        if (targetClient === 'base64') {
+            const { results: uaMappings } = await c.env.DB.prepare('SELECT ua_keyword, client_type FROM ua_mappings WHERE is_enabled = 1').all<{ ua_keyword: string; client_type: string; }>();
+            for (const mapping of uaMappings) {
+                if (userAgent.toLowerCase().includes(mapping.ua_keyword.toLowerCase())) {
+                    targetClient = mapping.client_type;
+                    break;
+                }
+            }
+        }
+        
+        // 2. Handle generation based on mode and target
+        if (content.generation_mode === 'online' && targetClient !== 'base64') {
+            // Online conversion for specific clients (Clash, Sing-box, etc.)
             const backend = await c.env.DB.prepare("SELECT url FROM subconverter_assets WHERE id = ?").bind(content.subconverter_backend_id).first<{ url: string }>();
             const config = await c.env.DB.prepare("SELECT url FROM subconverter_assets WHERE id = ?").bind(content.subconverter_config_id).first<{ url: string }>();
 
@@ -92,34 +124,32 @@ publicRoutes.get('/:sub_token/:profile_alias/subscribe', async (c) => {
                 return c.text('Subconverter backend or config not found.', 500);
             }
 
-            const userAgent = c.req.header('User-Agent') || '';
-            const { results: uaMappings } = await c.env.DB.prepare('SELECT ua_keyword, client_type FROM ua_mappings WHERE is_enabled = 1').all<{ ua_keyword: string; client_type: string; }>();
-            
-            let targetClient = 'clash';
-            for (const mapping of uaMappings) {
-                if (userAgent.toLowerCase().includes(mapping.ua_keyword.toLowerCase())) {
-                    targetClient = mapping.client_type;
-                    break;
-                }
-            }
-
-            const nodeLinks = allNodes.map(n => n.link || n.raw).filter(Boolean).join('\n');
-            const encodedNodes = btoa(nodeLinks);
+            // Construct the URL for subconverter to fetch from us
+            const currentUrl = new URL(c.req.url);
+            currentUrl.searchParams.set('b64', '1'); // Add flag to get base64 on the recursive call
 
             const targetUrl = new URL(`${backend.url}/sub`);
             targetUrl.searchParams.set('target', targetClient);
-            targetUrl.searchParams.set('url', `data:text/plain;base64,${encodedNodes}`);
+            targetUrl.searchParams.set('url', currentUrl.toString()); // Pass our own URL
             targetUrl.searchParams.set('config', config.url);
 
-            const subResponse = await fetch(targetUrl.toString(), { headers: { 'User-Agent': userAgent } });
-            if (!subResponse.ok) {
-                return c.text(`Failed to generate from subconverter: ${await subResponse.text()}`, 502);
+            try {
+                const subResponse = await fetch(targetUrl.toString(), { headers: { 'User-Agent': userAgent } });
+                if (!subResponse.ok) {
+                    const errorText = await subResponse.text();
+                    console.error(`Subconverter request failed with status ${subResponse.status}:`, errorText);
+                    return c.text(`Failed to generate from subconverter: ${errorText}`, 502);
+                }
+                const finalConfig = await subResponse.text();
+                return c.text(finalConfig);
+            } catch (err: any) {
+                console.error("Fetch to subconverter failed:", err);
+                return c.text(`Failed to connect to subconverter backend: ${err.message}`, 502);
             }
-            const finalConfig = await subResponse.text();
-            return c.text(finalConfig);
-
         } else {
-            return c.text(JSON.stringify(allNodes, null, 2));
+            // Local generation (base64) for browsers or when online mode is off
+            const base64Content = Buffer.from(nodeLinks, 'utf-8').toString('base64');
+            return c.text(base64Content);
         }
 
     } catch (e: any) {
