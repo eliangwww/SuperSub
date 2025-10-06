@@ -12,6 +12,49 @@ admin.get('/users', async (c) => {
     return c.json({ success: true, data: results });
 });
 
+admin.put('/users/:id', async (c) => {
+    const userId = c.req.param('id');
+    const { role } = await c.req.json();
+
+    if (!['admin', 'user'].includes(role)) {
+        return c.json({ success: false, message: 'Invalid role' }, 400);
+    }
+
+    try {
+        const { success } = await c.env.DB.prepare(
+            'UPDATE users SET role = ? WHERE id = ?'
+        ).bind(role, userId).run();
+
+        if (success) {
+            return c.json({ success: true, message: 'User role updated successfully' });
+        } else {
+            return c.json({ success: false, message: 'User not found or no changes made' }, 404);
+        }
+    } catch (error: any) {
+        console.error('Failed to update user role:', error);
+        return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+    }
+});
+
+admin.delete('/users/:id', async (c) => {
+    const userId = c.req.param('id');
+
+    try {
+        const { success } = await c.env.DB.prepare(
+            'DELETE FROM users WHERE id = ?'
+        ).bind(userId).run();
+
+        if (success) {
+            return c.json({ success: true, message: 'User deleted successfully' });
+        } else {
+            return c.json({ success: false, message: 'User not found' }, 404);
+        }
+    } catch (error: any) {
+        console.error('Failed to delete user:', error);
+        return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+    }
+});
+
 admin.get('/system-settings', async (c) => {
     const { results } = await c.env.DB.prepare('SELECT * FROM system_settings').all();
     const settings = (results as any[]).reduce((acc, setting) => {
