@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
 import type { Env } from '../utils/types';
-import { manualAuthMiddleware } from '../middleware/auth';
+import { manualAuthMiddleware, adminAuthMiddleware } from '../middleware/auth';
 
 const admin = new Hono<{ Bindings: Env }>();
 
-// All routes in this group require auth
-admin.use('*', manualAuthMiddleware);
+// All routes in this group require auth and admin role
+admin.use('*', manualAuthMiddleware, adminAuthMiddleware);
 
 admin.get('/users', async (c) => {
     const { results } = await c.env.DB.prepare("SELECT id, username, role, created_at, updated_at FROM users WHERE role != 'system'").all();

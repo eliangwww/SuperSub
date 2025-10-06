@@ -29,20 +29,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, h, reactive } from 'vue';
+import { ref, onMounted, computed, h } from 'vue';
 import {
-  NButton, NDataTable, NSpace, NModal, NCard, NForm, NFormItem, NInput, useMessage, NPopconfirm, NIcon, NTooltip
+  NButton, NDataTable, NSpace, NModal, NForm, NFormItem, NInput, useMessage, NPopconfirm, NIcon, NTooltip
 } from 'naive-ui';
-import { Star as StarIcon } from '@vicons/ionicons5';
+import { Star as StarIcon, StarOutline as StarOutlineIcon } from '@vicons/ionicons5';
 import type { DataTableColumns } from 'naive-ui';
 import { api } from '@/utils/api';
+import { useAuthStore } from '@/stores/auth';
 
 type SubconverterAsset = {
   id: number;
   name: string;
   url: string;
   type: 'backend' | 'config';
-  is_default?: 0 | 1;
+};
+
+type UserDefaults = {
+  default_backend_id?: number;
+  default_config_id?: number;
 };
 
 const props = defineProps<{
@@ -53,22 +58,24 @@ const props = defineProps<{
 
 const emit = defineEmits(['assets-updated']);
 
+const authStore = useAuthStore();
 const message = useMessage();
 const assets = ref<SubconverterAsset[]>([]);
+const userDefaults = ref<UserDefaults>({});
 const loading = ref(true);
 const showModal = ref(false);
 const saveLoading = ref(false);
 const formRef = ref<any>(null);
 
-const defaultAsset: SubconverterAsset = {
-  id: 0,
+const isAdmin = computed(() => authStore.user?.role === 'admin');
+
+const defaultAsset: Omit<SubconverterAsset, 'id'> = {
   name: '',
   url: '',
   type: props.assetType,
-  is_default: 0,
 };
 
-const currentAsset = ref<SubconverterAsset>({ ...defaultAsset });
+const currentAsset = ref<Partial<SubconverterAsset>>({ ...defaultAsset });
 
 const modalTitle = computed(() => (currentAsset.value.id ? `编辑${props.assetName}` : `添加${props.assetName}`));
 
@@ -77,12 +84,25 @@ const rules = {
   url: { required: true, message: '请输入 URL', trigger: 'blur' },
 };
 
+const fetchUserDefaults = async () => {
+  if (!authStore.isAuthenticated) return;
+  try {
+    const response = await api.get('/user/defaults');
+    if (response.data.success) {
+      userDefaults.value = response.data.data;
+    }
+  } catch (error) {
+    console.warn('Could not fetch user defaults.', error);
+  }
+};
+
 const fetchAssets = async () => {
+  if (!authStore.isAuthenticated) return;
   loading.value = true;
   try {
-    const response = await api.get('/subconverter-assets');
+    const response = await api.get(`/assets?type=${props.assetType}`);
     if (response.data.success) {
-      assets.value = response.data.data.filter((asset: SubconverterAsset) => asset.type === props.assetType);
+      assets.value = response.data.data;
       emit('assets-updated', assets.value);
     }
   } catch (error) {
@@ -106,18 +126,16 @@ const handleSave = async () => {
   saveLoading.value = true;
   try {
     if (currentAsset.value.id) {
-      // Update
-      await api.put(`/subconverter-assets/${currentAsset.value.id}`, currentAsset.value);
+      await api.put(`/assets/${currentAsset.value.id}`, currentAsset.value);
       message.success('更新成功');
     } else {
-      // Create
-      await api.post('/subconverter-assets', currentAsset.value);
+      await api.post('/assets', currentAsset.value);
       message.success('添加成功');
     }
     showModal.value = false;
     await fetchAssets();
-  } catch (error) {
-    message.error('保存失败');
+  } catch (error: any) {
+    message.error(error.response?.data?.message || '保存失败');
   } finally {
     saveLoading.value = false;
   }
@@ -125,22 +143,36 @@ const handleSave = async () => {
 
 const handleDelete = async (id: number) => {
   try {
-    await api.delete(`/subconverter-assets/${id}`);
+    await api.delete(`/assets/${id}`);
     message.success('删除成功');
     await fetchAssets();
-  } catch (error) {
-    message.error('删除失败');
+  } catch (error: any) {
+    message.error(error.response?.data?.message || '删除失败');
   }
 };
 
 const handleSetDefault = async (id: number) => {
+  const payload: Partial<UserDefaults> = {};
+  if (props.assetType === 'backend') {
+    payload.default_backend_id = id;
+  } else {
+    payload.default_config_id = id;
+  }
+
   try {
-    await api.put(`/subconverter-assets/${id}/default`);
+    await api.put('/user/defaults', payload);
     message.success('默认设置成功');
-    await fetchAssets();
+    await fetchUserDefaults(); // Refresh defaults state
   } catch (error) {
     message.error('设置默认失败');
   }
+};
+
+const isDefault = (row: SubconverterAsset) => {
+  if (props.assetType === 'backend') {
+    return userDefaults.value.default_backend_id === row.id;
+  }
+  return userDefaults.value.default_config_id === row.id;
 };
 
 const createColumns = (): DataTableColumns<SubconverterAsset> => [
@@ -150,13 +182,22 @@ const createColumns = (): DataTableColumns<SubconverterAsset> => [
     width: 60,
     align: 'center',
     render(row) {
-      if (row.is_default) {
-        return h(NTooltip, null, {
-          trigger: () => h(NIcon, { component: StarIcon, color: '#fdd835', size: 20 }),
-          default: () => '当前默认项'
-        });
-      }
-      return '';
+      const isRowDefault = isDefault(row);
+      return h(NTooltip, null, {
+        trigger: () => h(NButton, {
+          quaternary: true,
+          circle: true,
+          onClick: () => handleSetDefault(row.id),
+          disabled: isRowDefault,
+        }, {
+          icon: () => h(NIcon, {
+            component: isRowDefault ? StarIcon : StarOutlineIcon,
+            color: isRowDefault ? '#fdd835' : undefined,
+            size: 20
+          })
+        }),
+        default: () => isRowDefault ? '当前默认项' : '设为默认'
+      });
     }
   },
   {
@@ -173,30 +214,30 @@ const createColumns = (): DataTableColumns<SubconverterAsset> => [
   {
     title: '操作',
     key: 'actions',
+    width: 150,
     render(row) {
-      const actions = [
-        h(NButton, { size: 'small', onClick: () => openModal(row) }, { default: () => '编辑' }),
-        h(NPopconfirm,
-          { onPositiveClick: () => handleDelete(row.id) },
-          {
-            trigger: () => h(NButton, { size: 'small', type: 'error', ghost: true }, { default: () => '删除' }),
-            default: () => '确定要删除这个资源吗？'
-          }
-        ),
-      ];
+      if (!isAdmin.value) return null;
 
-      if (!row.is_default) {
-        actions.unshift(
-          h(NButton, { size: 'small', type: 'primary', ghost: true, onClick: () => handleSetDefault(row.id) }, { default: () => '设为默认' })
-        );
-      }
-
-      return h(NSpace, null, { default: () => actions });
+      return h(NSpace, null, {
+        default: () => [
+          h(NButton, { size: 'small', onClick: () => openModal(row) }, { default: () => '编辑' }),
+          h(NPopconfirm,
+            { onPositiveClick: () => handleDelete(row.id) },
+            {
+              trigger: () => h(NButton, { size: 'small', type: 'error', ghost: true }, { default: () => '删除' }),
+              default: () => '确定要删除这个资源吗？'
+            }
+          ),
+        ]
+      });
     },
   },
 ];
 
 const columns = createColumns();
 
-onMounted(fetchAssets);
+onMounted(async () => {
+  await fetchUserDefaults();
+  await fetchAssets();
+});
 </script>

@@ -5,6 +5,7 @@ import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal
 import type { DataTableColumns, FormInst } from 'naive-ui';
 import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon } from '@vicons/ionicons5';
 import { api } from '@/utils/api';
+import { useAuthStore } from '@/stores/auth';
 import type { ApiResponse, Profile, Subscription, Node } from '@/types';
 
 const message = useMessage();
@@ -150,6 +151,8 @@ const createColumns = ({ onCopy, onPreview, onEdit, onDelete }: {
 };
 
 const openEditModal = async (profile: Profile | null = null) => {
+  const authStore = useAuthStore();
+  if (!authStore.isAuthenticated) return;
   await fetchAllSources();
   // Reset form state to default
   Object.assign(formState, defaultFormState());
@@ -196,16 +199,28 @@ const openEditModal = async (profile: Profile | null = null) => {
   } else {
     // Creating a new profile
     editingProfile.value = null;
-    // Set default backend and config for new profiles
-    const defaultBackend = allBackends.value.find(b => b.is_default);
-    const defaultConfig = allConfigs.value.find(c => c.is_default);
-    formState.subconverter_backend_id = defaultBackend ? defaultBackend.id : null;
-    formState.subconverter_config_id = defaultConfig ? defaultConfig.id : null;
+    try {
+      const defaultsResponse = await api.get('/user/defaults');
+      if (defaultsResponse.data.success && defaultsResponse.data.data) {
+        const userDefaults = defaultsResponse.data.data;
+        formState.subconverter_backend_id = userDefaults.default_backend_id || null;
+        formState.subconverter_config_id = userDefaults.default_config_id || null;
+      }
+    } catch (e) {
+      console.warn("Could not fetch user defaults, falling back to global defaults.", e);
+      // Fallback to global defaults if user-specific ones aren't available
+      const defaultBackend = allBackends.value.find(b => b.is_default);
+      const defaultConfig = allConfigs.value.find(c => c.is_default);
+      formState.subconverter_backend_id = defaultBackend ? defaultBackend.id : null;
+      formState.subconverter_config_id = defaultConfig ? defaultConfig.id : null;
+    }
   }
   showEditModal.value = true;
 };
 
 const fetchProfiles = async () => {
+  const authStore = useAuthStore();
+  if (!authStore.isAuthenticated) return;
   loading.value = true;
   try {
     const response = await api.get<ApiResponse<Profile[]>>('/profiles');
@@ -222,18 +237,19 @@ const fetchProfiles = async () => {
 };
 
 const fetchAllSources = async () => {
+  const authStore = useAuthStore();
+  if (!authStore.isAuthenticated) return;
   try {
-    const [subsRes, nodesRes, assetsRes] = await Promise.all([
+    const [subsRes, nodesRes, backendRes, configRes] = await Promise.all([
       api.get<ApiResponse<Subscription[]>>('/subscriptions'),
       api.get<ApiResponse<Record<string, any[]>>>('/nodes/grouped'),
-      api.get<ApiResponse<any[]>>('/subconverter-assets'),
+      api.get<ApiResponse<any[]>>('/assets?type=backend'),
+      api.get<ApiResponse<any[]>>('/assets?type=config'),
     ]);
     if (subsRes.data.success) allSubscriptions.value = subsRes.data.data || [];
     if (nodesRes.data.success) allManualNodes.value = nodesRes.data.data || {};
-    if (assetsRes.data.success) {
-      allBackends.value = assetsRes.data.data?.filter((a: any) => a.type === 'backend') || [];
-      allConfigs.value = assetsRes.data.data?.filter((a: any) => a.type === 'config') || [];
-    }
+    if (backendRes.data.success) allBackends.value = backendRes.data.data || [];
+    if (configRes.data.success) allConfigs.value = configRes.data.data || [];
   } catch (err: any) {
     if (!axios.isCancel(err)) message.error("获取订阅、节点或模板资源失败");
   }
