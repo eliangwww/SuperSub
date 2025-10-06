@@ -53,6 +53,11 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
             client = userAgent.match(/sing-box\/[v\d.]+/i)?.[0] || client;
             format = 'sing-box';
         }
+        
+        // Default to base64 if no specific client is detected (e.g., browser access)
+        if (format === 'Unknown') {
+            format = 'base64';
+        }
 
         const now = new Date(new Date().getTime() + 8 * 3600 * 1000);
         const time = now.toISOString().replace('T', ' ').substring(0, 19);
