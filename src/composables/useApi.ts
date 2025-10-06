@@ -1,4 +1,5 @@
 import { useAuthStore } from '@/stores/auth';
+import { LogoutInProgressError } from '@/utils/errors';
 
 const BASE_URL = '/api';
 
@@ -13,8 +14,7 @@ export const useApi = () => {
 
   const request = async <T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> => {
     if (authStore.isLoggingOut) {
-      console.log(`Request to ${endpoint} cancelled due to logout.`);
-      return new Promise(() => {}); // Prevent request from being sent
+      throw new LogoutInProgressError(`Request to ${endpoint} cancelled due to logout.`);
     }
     const headers = new Headers(options.headers || {});
     if (authStore.token) {
