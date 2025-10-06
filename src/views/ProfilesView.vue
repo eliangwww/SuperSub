@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, reactive, computed, h } from 'vue';
+import { ref, onMounted, reactive, computed, h, watch } from 'vue';
 import axios from 'axios';
 import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NSpin, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar, NTabs, NTabPane, NCollapse, NCollapseItem, NSwitch } from 'naive-ui';
 import type { DataTableColumns, FormInst } from 'naive-ui';
@@ -34,6 +34,7 @@ const defaultFormState = () => ({
   node_prefix_settings: {
     enable_subscription_prefix: false,
     manual_node_prefix: '',
+    enable_group_name_prefix: false,
   },
   subconverter_backend_id: null as number | null,
   subconverter_config_id: null as number | null,
@@ -84,6 +85,13 @@ const isGroupIndeterminate = (group: { id: string; name: string }[]) => {
   const selectedCount = formState.node_ids.filter(id => groupNodeIds.has(id)).length;
   return selectedCount > 0 && selectedCount < groupNodeIds.size;
 };
+
+// Watch for changes in the group name prefix switch
+watch(() => formState.node_prefix_settings.enable_group_name_prefix, (newValue: boolean) => {
+  if (newValue) {
+    formState.node_prefix_settings.manual_node_prefix = '';
+  }
+});
 
 
 const rules = {
@@ -470,9 +478,18 @@ onMounted(() => {
                 <n-switch v-model:value="formState.node_prefix_settings.enable_subscription_prefix" />
                 <template #feedback>开启后，来自订阅的节点名称将自动变为 "订阅名称 - 节点名称"。</template>
             </n-form-item>
-            <n-form-item label="手工节点前缀">
-                <n-input v-model:value="formState.node_prefix_settings.manual_node_prefix" placeholder="例如 MyNodes" clearable />
-                <template #feedback>设置后，所有手工添加的节点名称将变为 "前缀 - 节点名称"。</template>
+            <n-form-item label="使用分组名作为手工节点前缀">
+                <n-switch v-model:value="formState.node_prefix_settings.enable_group_name_prefix" />
+                <template #feedback>开启后，手工节点将使用其所属的分组名作为前缀。此选项优先于下方的自定义前缀。</template>
+            </n-form-item>
+            <n-form-item label="手工节点自定义前缀">
+                <n-input
+                  v-model:value="formState.node_prefix_settings.manual_node_prefix"
+                  placeholder="例如 MyNodes"
+                  clearable
+                  :disabled="formState.node_prefix_settings.enable_group_name_prefix"
+                />
+                <template #feedback>设置后，所有手工添加的节点名称将变为 "前缀 - 节点名称"。当“使用分组名作为前缀”开启时，此项无效。</template>
             </n-form-item>
           </n-tab-pane>
         </n-tabs>

@@ -200,3 +200,70 @@ export const parseNodeLinks = (linksText: string): (ParsedNode & { id: string; r
 
   return parsedNodes;
 };
+
+// A simple Base64 encoder that works in both browser and Node.js environments
+const base64Encode = (str: string): string => {
+    try {
+        // For browser environments
+        if (typeof btoa !== 'undefined') {
+            return btoa(unescape(encodeURIComponent(str)));
+        }
+        // For Node.js environments
+        if (typeof Buffer !== 'undefined') {
+            return Buffer.from(str, 'utf-8').toString('base64');
+        }
+        return ''; // Fallback
+    } catch (e) {
+        console.error('Failed to encode to base64:', e);
+        return '';
+    }
+};
+
+
+export const regenerateLink = (node: ParsedNode): string => {
+    const protocol = node.protocol;
+    const name = encodeURIComponent(node.name);
+
+    switch (protocol) {
+        case 'vmess':
+            const vmessConfig = { ...node.protocol_params, ps: node.name };
+            return `vmess://${base64Encode(JSON.stringify(vmessConfig))}`;
+        
+        case 'ss':
+            const credentials = `${node.protocol_params.method}:${node.password}`;
+            const encodedCredentials = base64Encode(credentials).replace(/=/g, ''); // Some clients don't like padding
+            return `ss://${encodedCredentials}@${node.server}:${node.port}#${name}`;
+
+        case 'trojan':
+        case 'vless':
+            const trojanUrl = new URL(`${protocol}://${node.password}@${node.server}:${node.port}`);
+            trojanUrl.hash = name;
+            for (const key in node.protocol_params) {
+                trojanUrl.searchParams.set(key, node.protocol_params[key]);
+            }
+            return trojanUrl.toString();
+
+        case 'hysteria2':
+            const hy2Url = new URL(`hysteria2://${node.password}@${node.server}:${node.port}`);
+            hy2Url.hash = name;
+            for (const key in node.protocol_params) {
+                if (key !== 'auth') { // Auth is already in the userinfo part
+                    hy2Url.searchParams.set(key, node.protocol_params[key]);
+                }
+            }
+            return hy2Url.toString();
+        
+        case 'tuic':
+            const tuicUrl = new URL(`tuic://${node.protocol_params.uuid}:${node.password}@${node.server}:${node.port}`);
+            tuicUrl.hash = name;
+            for (const key in node.protocol_params) {
+                if (key !== 'uuid') {
+                    tuicUrl.searchParams.set(key, node.protocol_params[key]);
+                }
+            }
+            return tuicUrl.toString();
+
+        default:
+            return node.link || ''; // Fallback to original link
+    }
+};
