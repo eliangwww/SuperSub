@@ -3,3 +3,14 @@ export type Env = {
   DB: D1Database;
   JWT_SECRET: string;
 }
+
+export type AppContext = {
+  Bindings: Env;
+  Variables: {
+    jwtPayload: {
+      id: string;
+      username: string;
+      role: string;
+    };
+  };
+};
