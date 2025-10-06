@@ -37,8 +37,10 @@ import {
   NForm, NFormItem, NInput, NButton, useMessage, NDivider, NSpace, NGrid, NFormItemGi
 } from 'naive-ui';
 import { api } from '@/utils/api';
+import { useAuthStore } from '@/stores/auth';
 
 const message = useMessage();
+const authStore = useAuthStore();
 const formRef = ref<any>(null);
 const saveLoading = ref(false);
 const testLoading = ref(false);
@@ -49,6 +51,9 @@ const formState = ref({
 });
 
 const fetchSettings = async () => {
+  if (!authStore.isAuthenticated) {
+    return;
+  }
   try {
     const userSettingsResponse = await api.get('/settings');
     if (userSettingsResponse.data.success && Array.isArray(userSettingsResponse.data.data)) {

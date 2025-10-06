@@ -6,6 +6,18 @@ import type { Env } from '../utils/types';
 const auth = new Hono<{ Bindings: Env }>();
 
 auth.post('/register', async (c) => {
+    // Check if registration is allowed
+    const allowRegistrationSetting = await c.env.DB.prepare(
+        `SELECT value FROM system_settings WHERE key = 'allow_registration'`
+    ).first<{ value: string }>();
+
+    // Default to 'true' if the setting is not found, for backward compatibility.
+    const isRegistrationAllowed = allowRegistrationSetting?.value !== 'false';
+
+    if (!isRegistrationAllowed) {
+        return c.json({ success: false, message: 'User registration is currently disabled by the administrator.' }, 403);
+    }
+
     const { username, password } = await c.req.json();
     if (!username || !password) {
         return c.json({ success: false, message: 'Missing username or password' }, 400);

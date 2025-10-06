@@ -28,7 +28,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { NCard, NForm, NFormItemRow, NInput, NButton, useMessage } from 'naive-ui';
@@ -39,6 +39,22 @@ const loading = ref(false);
 const router = useRouter();
 const authStore = useAuthStore();
 const message = useMessage();
+
+onMounted(async () => {
+  await authStore.checkRegistrationStatus();
+  if (!authStore.isRegistrationAllowed) {
+    message.warning('User registration is currently disabled.');
+    router.push('/login');
+  }
+});
+
+// Watch for changes in case the status is fetched after the initial mount check
+watch(() => authStore.isRegistrationAllowed, (isAllowed) => {
+  if (!isAllowed) {
+    message.warning('User registration is currently disabled.');
+    router.push('/login');
+  }
+});
 
 const handleRegister = async () => {
   loading.value = true;

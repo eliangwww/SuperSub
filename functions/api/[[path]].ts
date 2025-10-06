@@ -12,6 +12,7 @@ import profileRoutes from './routes/profiles';
 import adminRoutes from './routes/admin';
 import assetRoutes from './routes/assets';
 import groupRoutes from './routes/groups';
+import systemRoutes from './routes/system';
 
 export const app = new Hono<{ Bindings: Env }>().basePath('/api');
 
@@ -20,6 +21,7 @@ app.use('*', methodOverrideMiddleware(app));
 
 // Public routes
 app.route('/auth', authRoutes);
+app.route('/system', systemRoutes);
 
 // Authenticated routes
 app.route('/nodes', nodeRoutes);
