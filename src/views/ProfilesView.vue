@@ -104,7 +104,7 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
 
 const generatedUrl = computed(() => {
   if (!subToken.value || !formState.alias) return '';
-  return `${window.location.origin}/s/${subToken.value}/${formState.alias}/subscribe`;
+  return `${window.location.origin}/api/public/${subToken.value}/${formState.alias}`;
 });
 
 const copyGeneratedUrl = () => {
@@ -128,7 +128,7 @@ const createColumns = ({ onCopy, onPreview, onEdit, onDelete }: {
         if (!subToken.value || !row.alias) {
           return h('span', '请设置链接别名');
         }
-        const url = `${window.location.origin}/s/${subToken.value}/${row.alias}/subscribe`;
+        const url = `${window.location.origin}/api/public/${subToken.value}/${row.alias}`;
         return h(NButton, { text: true, tag: 'a', href: url, target: '_blank', type: 'primary' }, { default: () => url });
       }
     },
@@ -342,7 +342,7 @@ const handleCopyLink = (row: Profile) => {
     message.error('无法复制链接：缺少订阅令牌或链接别名。');
     return;
   }
-  const url = `${window.location.origin}/s/${subToken.value}/${row.alias}/subscribe`;
+  const url = `${window.location.origin}/api/public/${subToken.value}/${row.alias}`;
   navigator.clipboard.writeText(url).then(() => message.success('链接已复制'), () => message.error('复制失败'));
 };
 
