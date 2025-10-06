@@ -54,6 +54,7 @@ import {
 } from 'naive-ui';
 import { api } from '@/utils/api';
 import { useAuthStore } from '@/stores/auth';
+import { LogoutInProgressError } from '@/utils/errors';
 
 const message = useMessage();
 const authStore = useAuthStore();
@@ -69,12 +70,19 @@ const formState = ref({
 });
 
 const fetchSubToken = async () => {
+  if (!authStore.isAuthenticated) {
+    return;
+  }
   try {
     const response = await api.get('/user/sub-token');
     if (response.data.success) {
       subToken.value = response.data.data.token;
     }
   } catch (error) {
+    if (error instanceof LogoutInProgressError) {
+      console.log('Logout in progress, skipping sub token fetch.');
+      return;
+    }
     message.error('获取订阅令牌失败');
   }
 };

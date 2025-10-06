@@ -6,6 +6,7 @@ import type { DataTableColumns, FormInst } from 'naive-ui';
 import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon } from '@vicons/ionicons5';
 import { api } from '@/utils/api';
 import { useAuthStore } from '@/stores/auth';
+import { LogoutInProgressError } from '@/utils/errors';
 import type { ApiResponse, Profile, Subscription, Node } from '@/types';
 
 const message = useMessage();
@@ -246,13 +247,19 @@ const fetchProfiles = async () => {
 
 const fetchSubToken = async () => {
   const authStore = useAuthStore();
-  if (!authStore.isAuthenticated) return;
+  if (!authStore.isAuthenticated) {
+    return;
+  }
   try {
     const response = await api.get('/user/sub-token');
     if (response.data.success) {
       subToken.value = response.data.data.token;
     }
   } catch (error) {
+    if (error instanceof LogoutInProgressError) {
+      console.log('Logout in progress, skipping sub token fetch.');
+      return;
+    }
     message.error('获取订阅令牌失败');
   }
 };

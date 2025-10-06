@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia';
+import { nextTick } from 'vue';
 import axios from 'axios';
 import { User } from '@/types';
 
@@ -40,12 +41,17 @@ export const useAuthStore = defineStore('auth', {
         throw error;
       }
     },
-    logout() {
+    async logout() {
       this.isLoggingOut = true;
-      this.user = null;
-      this.token = null;
-      delete axios.defaults.headers.common['Authorization'];
-      this.isLoggingOut = false; // Reset the flag after logout is complete
+      try {
+        this.user = null;
+        this.token = null;
+        delete axios.defaults.headers.common['Authorization'];
+        // Wait for the next DOM update cycle to ensure the logout state has propagated
+        await nextTick();
+      } finally {
+        this.isLoggingOut = false; // Reset the flag after logout is complete
+      }
     },
     async fetchUser() {
       if (this.token && !this.user) {
