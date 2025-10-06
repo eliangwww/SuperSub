@@ -194,9 +194,16 @@ INSERT OR IGNORE INTO system_settings (key, value) VALUES ('allow_registration',
 
 -- Seed initial UA mappings
 INSERT OR IGNORE INTO ua_mappings (ua_keyword, client_type) VALUES
-  ('clash', 'clash'), ('stash', 'clash'), ('shadowrocket', 'shadowrocket'),
-  ('quantumult%20x', 'quantumultx'), ('quantumult', 'quantumult'), ('surge', 'surge'),
-  ('surfboard', 'surfboard'), ('loon', 'loon'), ('sing-box', 'sing-box'), ('v2rayng', 'v2ray');
+  ('clash', 'clash'),
+  ('stash', 'clash'),
+  ('mihomo', 'clash'),
+  ('quantumult%20x', 'quantumultx'),
+  ('quantumult', 'quantumult'),
+  ('surge', 'surge'),
+  ('surfboard', 'surfboard'),
+  ('loon', 'loon'),
+  ('sing-box', 'sing-box'),
+  ('nekobox', 'sing-box');
 
 -- Seed public subconverter assets
 INSERT OR IGNORE INTO subconverter_assets (id, user_id, name, url, type, is_default) VALUES (1, 'system-user-001', 'CM负载均衡后端【vless reality+hy1+hy2】', 'https://subapi.cmliussss.net', 'backend', 1);
