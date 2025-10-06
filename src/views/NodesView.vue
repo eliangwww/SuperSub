@@ -170,7 +170,7 @@ const createColumns = ({ onTest, onEdit, onDelete }: {
 };
 
 const fetchData = async () => {
-  if (authStore.isLoggingOut) return;
+  if (!authStore.isAuthenticated) return;
   loading.value = true;
   try {
     const response = await api.get<Node[]>('/nodes');

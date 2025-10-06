@@ -5,6 +5,7 @@ import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, 
 import type { DataTableColumns, FormInst } from 'naive-ui'
 import { Subscription, Node, ApiResponse, SubconverterAsset } from '@/types'
 import { api } from '@/utils/api'
+import { useAuthStore } from '@/stores/auth'
 import SubscriptionNodesPreview from '@/components/SubscriptionNodesPreview.vue'
 import { format } from 'date-fns'
 
@@ -195,6 +196,9 @@ const closeModal = () => {
 }
 
 const fetchSubscriptions = async () => {
+  const authStore = useAuthStore()
+  if (!authStore.isAuthenticated) return
+
   loading.value = true
   try {
     const subsResponse = await api.get<ApiResponse<Subscription[]>>('/subscriptions')

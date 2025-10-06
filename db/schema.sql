@@ -67,6 +67,16 @@ CREATE TABLE IF NOT EXISTS subconverter_assets (
   FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
+-- Create user_default_assets table to store user-specific default asset selections
+CREATE TABLE IF NOT EXISTS user_default_assets (
+  user_id TEXT PRIMARY KEY,
+  default_backend_id INTEGER,
+  default_config_id INTEGER,
+  FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+  FOREIGN KEY (default_backend_id) REFERENCES subconverter_assets (id) ON DELETE SET NULL,
+  FOREIGN KEY (default_config_id) REFERENCES subconverter_assets (id) ON DELETE SET NULL
+);
+
 -- Create profiles table
 CREATE TABLE IF NOT EXISTS profiles (
   id TEXT PRIMARY KEY,

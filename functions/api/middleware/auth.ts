@@ -33,3 +33,14 @@ export const manualAuthMiddleware = async (c: Context<{ Bindings: Env }>, next: 
     return c.json({ success: false, message: 'Unauthorized: Invalid token' }, 401);
   }
 };
+
+// Middleware to check for admin role
+export const adminAuthMiddleware = async (c: Context, next: Next) => {
+  const payload = c.get('jwtPayload');
+
+  if (!payload || payload.role !== 'admin') {
+    return c.json({ success: false, message: 'Forbidden: Administrator access required' }, 403);
+  }
+
+  await next();
+};

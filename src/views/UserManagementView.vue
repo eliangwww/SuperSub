@@ -29,6 +29,7 @@ import { NDataTable, NButton, useMessage, useDialog, NCard, NSwitch, NFlex } fro
 import type { DataTableColumns } from 'naive-ui';
 import { useApi } from '@/composables/useApi';
 import type { User } from '@/types';
+import { useAuthStore } from '@/stores/auth';
 
 const api = useApi();
 const message = useMessage();
@@ -40,6 +41,8 @@ const settingsLoading = ref(true);
 const allowRegistration = ref(false);
 
 const fetchSettings = async () => {
+  const authStore = useAuthStore();
+  if (!authStore.isAuthenticated) return;
   settingsLoading.value = true;
   try {
     const response = await api.get('/admin/system-settings');
@@ -122,6 +125,8 @@ const createColumns = ({ onUpdateRole, onDeleteUser }: { onUpdateRole: (user: Us
 };
 
 const fetchUsers = async () => {
+  const authStore = useAuthStore();
+  if (!authStore.isAuthenticated) return;
   loading.value = true;
   try {
     const response = await api.get('/admin/users');
