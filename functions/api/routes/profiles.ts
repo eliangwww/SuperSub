@@ -29,7 +29,7 @@ profiles.get('/:id/preview-nodes', async (c) => {
         const content = JSON.parse(profile.content || '{}');
         const userId = profile.user_id;
 
-        let allNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; })[] = [];
+        let allNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; group_name?: string; })[] = [];
 
         if (content.subscription_ids && content.subscription_ids.length > 0) {
             const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
@@ -57,7 +57,13 @@ profiles.get('/:id/preview-nodes', async (c) => {
 
         if (content.node_ids && content.node_ids.length > 0) {
             const nodePlaceholders = content.node_ids.map(() => '?').join(',');
-            const { results: manualNodes } = await c.env.DB.prepare(`SELECT * FROM nodes WHERE id IN (${nodePlaceholders}) AND user_id = ?`).bind(...content.node_ids, userId).all<any>();
+            const manualNodesQuery = `
+                SELECT n.*, g.name as group_name
+                FROM nodes n
+                LEFT JOIN node_groups g ON n.group_id = g.id
+                WHERE n.id IN (${nodePlaceholders}) AND n.user_id = ?
+            `;
+            const { results: manualNodes } = await c.env.DB.prepare(manualNodesQuery).bind(...content.node_ids, userId).all<any>();
             
             const parsedManualNodes = manualNodes.map(n => ({
                 id: n.id,
@@ -68,20 +74,31 @@ profiles.get('/:id/preview-nodes', async (c) => {
                 protocol_params: JSON.parse(n.protocol_params || '{}'),
                 link: n.link,
                 raw: n.link,
+                group_name: n.group_name, // Keep group name for prefixing
             }));
+
             const taggedManualNodes = parsedManualNodes.map(node => ({ ...node, isManual: true }));
             allNodes.push(...taggedManualNodes);
         }
 
         const prefixSettings = content.node_prefix_settings || {};
-        if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix) {
+        if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix || prefixSettings.enable_group_name_prefix) {
             allNodes = allNodes.map(node => {
+                // Subscription prefix logic (unchanged)
                 if (prefixSettings.enable_subscription_prefix && node.subscriptionName) {
                     return { ...node, name: `${node.subscriptionName} - ${node.name}` };
                 }
-                if (prefixSettings.manual_node_prefix && node.isManual) {
-                    return { ...node, name: `${prefixSettings.manual_node_prefix} - ${node.name}` };
+
+                // Manual node prefixing logic (new priority)
+                if (node.isManual) {
+                    if (prefixSettings.enable_group_name_prefix && node.group_name) {
+                        return { ...node, name: `${node.group_name} - ${node.name}` };
+                    }
+                    if (prefixSettings.manual_node_prefix) {
+                        return { ...node, name: `${prefixSettings.manual_node_prefix} - ${node.name}` };
+                    }
                 }
+                
                 return node;
             });
         }

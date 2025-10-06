@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { Hono } from 'hono';
 import type { Env } from '../utils/types';
 import { userAgents, parseSubscriptionContent, applySubscriptionRules } from './subscriptions';
+import { regenerateLink } from '../../../src/utils/nodeParser';
 
 const publicRoutes = new Hono<{ Bindings: Env }>();
 
@@ -53,7 +54,13 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
 
         if (content.node_ids && content.node_ids.length > 0) {
             const nodePlaceholders = content.node_ids.map(() => '?').join(',');
-            const { results: manualNodes } = await c.env.DB.prepare(`SELECT * FROM nodes WHERE id IN (${nodePlaceholders}) AND user_id = ?`).bind(...content.node_ids, userId).all<any>();
+            const manualNodesQuery = `
+                SELECT n.*, g.name as group_name
+                FROM nodes n
+                LEFT JOIN node_groups g ON n.group_id = g.id
+                WHERE n.id IN (${nodePlaceholders}) AND n.user_id = ?
+            `;
+            const { results: manualNodes } = await c.env.DB.prepare(manualNodesQuery).bind(...content.node_ids, userId).all<any>();
             
             const parsedManualNodes = manualNodes.map(n => ({
                 id: n.id,
@@ -64,7 +71,9 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
                 protocol_params: JSON.parse(n.protocol_params || '{}'),
                 link: n.link,
                 raw: n.link,
+                group_name: n.group_name, // Keep group name for prefixing
             }));
+
             const taggedManualNodes = parsedManualNodes.map(node => ({ ...node, isManual: true }));
             allNodes.push(...taggedManualNodes);
         }
@@ -74,25 +83,34 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
         }
 
         const prefixSettings = content.node_prefix_settings || {};
-        if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix) {
+        if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix || prefixSettings.enable_group_name_prefix) {
             allNodes = allNodes.map(node => {
+                // Subscription prefix logic (unchanged)
                 if (prefixSettings.enable_subscription_prefix && node.subscriptionName) {
                     return { ...node, name: `${node.subscriptionName} - ${node.name}` };
                 }
-                if (prefixSettings.manual_node_prefix && node.isManual) {
-                    return { ...node, name: `${prefixSettings.manual_node_prefix} - ${node.name}` };
+
+                // Manual node prefixing logic (new priority)
+                if (node.isManual) {
+                    if (prefixSettings.enable_group_name_prefix && node.group_name) {
+                        return { ...node, name: `${node.group_name} - ${node.name}` };
+                    }
+                    if (prefixSettings.manual_node_prefix) {
+                        return { ...node, name: `${prefixSettings.manual_node_prefix} - ${node.name}` };
+                    }
                 }
+                
                 return node;
             });
         }
 
         const userAgent = c.req.header('User-Agent') || '';
         const query = c.req.query();
-        const nodeLinks = allNodes.map(n => n.link || n.raw).filter(Boolean).join('\n');
+        const regeneratedLinks = allNodes.map(regenerateLink).filter(Boolean).join('\n');
 
         // If the request asks for base64, return it directly. This is for subconverter to fetch.
         if (query.b64) {
-            const base64Content = Buffer.from(nodeLinks, 'utf-8').toString('base64');
+            const base64Content = Buffer.from(regeneratedLinks, 'utf-8').toString('base64');
             return c.text(base64Content);
         }
 
@@ -132,6 +150,7 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
             targetUrl.searchParams.set('target', targetClient);
             targetUrl.searchParams.set('url', currentUrl.toString()); // Pass our own URL
             targetUrl.searchParams.set('config', config.url);
+            targetUrl.searchParams.set('filename', profile.name);
 
             try {
                 const subResponse = await fetch(targetUrl.toString(), { headers: { 'User-Agent': userAgent } });
@@ -148,7 +167,7 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
             }
         } else {
             // Local generation (base64) for browsers or when online mode is off
-            const base64Content = Buffer.from(nodeLinks, 'utf-8').toString('base64');
+            const base64Content = Buffer.from(regeneratedLinks, 'utf-8').toString('base64');
             return c.text(base64Content);
         }
 
