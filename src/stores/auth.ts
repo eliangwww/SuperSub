@@ -7,12 +7,26 @@ export const useAuthStore = defineStore('auth', {
     user: null as User | null,
     token: null,
     isLoggingOut: false,
+    isRegistrationAllowed: true, // Default to true
   }),
   getters: {
     isAuthenticated: (state) => !!state.token,
     isAdmin: (state) => state.user?.role === 'admin',
   },
   actions: {
+    async checkRegistrationStatus() {
+      try {
+        // This endpoint is public, so no auth is needed.
+        const response = await axios.get('/api/system/settings');
+        if (response.data.success) {
+          this.isRegistrationAllowed = response.data.data.allow_registration === 'true';
+        }
+      } catch (error) {
+        console.error('Failed to check registration status:', error);
+        // In case of error, default to allowing registration to not block users if the API fails.
+        this.isRegistrationAllowed = true;
+      }
+    },
     async login(credentials: { username: string; password: any; }) {
       const response = await axios.post('/api/auth/login', credentials);
       const { token, user } = response.data.data;
@@ -26,6 +40,7 @@ export const useAuthStore = defineStore('auth', {
       this.user = null;
       this.token = null;
       delete axios.defaults.headers.common['Authorization'];
+      this.isLoggingOut = false; // Reset the flag after logout is complete
     },
     async fetchUser() {
       if (this.token && !this.user) {

@@ -21,4 +21,27 @@ admin.get('/system-settings', async (c) => {
     return c.json({ success: true, data: settings });
 });
 
+admin.post('/system-settings', async (c) => {
+    const body = await c.req.json();
+    const key = 'allow_registration';
+    const value = String(body[key]);
+
+    if (value !== 'true' && value !== 'false') {
+        return c.json({ success: false, message: 'Invalid value for allow_registration' }, 400);
+    }
+
+    try {
+        // Use INSERT OR REPLACE to create the setting if it doesn't exist, or update it if it does.
+        await c.env.DB.prepare(
+            `INSERT INTO system_settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+        ).bind(key, value).run();
+
+        return c.json({ success: true, message: 'Settings updated successfully' });
+    } catch (error: any) {
+        console.error('Failed to update system settings:', error);
+        return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+    }
+});
+
 export default admin;

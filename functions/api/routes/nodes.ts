@@ -103,6 +103,30 @@ nodes.post('/batch-import', manualAuthMiddleware, async (c) => {
     return c.json({ success: true, message: `Successfully imported ${stmts.length} nodes.` });
 });
 
+nodes.post('/batch-update-group', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const body = await c.req.json<{ nodeIds?: string[]; groupId?: string | null }>();
+
+    if (!body.nodeIds || body.nodeIds.length === 0) {
+        return c.json({ success: false, message: 'No nodes selected' }, 400);
+    }
+
+    const now = new Date().toISOString();
+    const groupId = body.groupId || null;
+
+    // D1's `in` operator doesn't work well with `?` binding for arrays.
+    // We need to create the placeholders manually.
+    const placeholders = body.nodeIds.map(() => '?').join(',');
+
+    await c.env.DB.prepare(
+        `UPDATE nodes
+         SET group_id = ?, updated_at = ?
+         WHERE id IN (${placeholders}) AND user_id = ?`
+    ).bind(groupId, now, ...body.nodeIds, user.id).run();
+
+    return c.json({ success: true, message: 'Nodes moved successfully' });
+});
+
 nodes.get('/:id', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const { id } = c.req.param();

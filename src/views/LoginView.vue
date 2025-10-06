@@ -18,7 +18,7 @@
         </n-button>
       </n-form>
       <template #footer>
-        <p class="text-sm text-center text-gray-600">
+        <p v-if="authStore.isRegistrationAllowed" class="text-sm text-center text-gray-600">
           Don't have an account?
           <router-link to="/register" class="font-medium text-indigo-600 hover:underline">Register</router-link>
         </p>
@@ -28,7 +28,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { NCard, NForm, NFormItemRow, NInput, NButton, useMessage } from 'naive-ui';
@@ -39,6 +39,10 @@ const loading = ref(false);
 const router = useRouter();
 const authStore = useAuthStore();
 const message = useMessage();
+
+onMounted(() => {
+  authStore.checkRegistrationStatus();
+});
 
 const handleLogin = async () => {
   loading.value = true;
