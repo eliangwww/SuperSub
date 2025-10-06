@@ -237,6 +237,8 @@ const fetchProfiles = async () => {
 };
 
 const fetchSubToken = async () => {
+  const authStore = useAuthStore();
+  if (!authStore.isAuthenticated) return;
   try {
     const response = await api.get('/user/sub-token');
     if (response.data.success) {
