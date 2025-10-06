@@ -31,8 +31,9 @@ auth.post('/register', async (c) => {
     let role = userCount === 0 ? 'admin' : 'user';
     const hashedPassword = await hash(password, 10);
     const id = crypto.randomUUID();
+    const subToken = crypto.randomUUID();
     const now = new Date().toISOString();
-    await c.env.DB.prepare('INSERT INTO users (id, username, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').bind(id, username, hashedPassword, role, now, now).run();
+    await c.env.DB.prepare('INSERT INTO users (id, username, password, role, sub_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, username, hashedPassword, role, subToken, now, now).run();
     return c.json({ success: true, data: { id, username, role } }, 201);
 });
 
@@ -49,7 +50,7 @@ auth.post('/login', async (c) => {
     if (!isPasswordValid) {
         return c.json({ success: false, message: 'Invalid password' }, 401);
     }
-    const payload = { id: user.id, username: user.username, role: user.role || 'user', exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24) };
+    const payload = { id: user.id, username: user.username, role: user.role || 'user', sub_token: user.sub_token, exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24) };
     const token = await sign(payload, c.env.JWT_SECRET);
     return c.json({ success: true, data: { token, user: payload } });
 });

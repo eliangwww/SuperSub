@@ -51,7 +51,7 @@ const handleLogin = async () => {
     router.push('/'); // Redirect to dashboard after login
   } catch (error: any) {
     console.error('Login failed:', error);
-    message.error(error.response?.data?.error || 'Login failed. Please check your credentials.');
+    message.error(error.response?.data?.message || 'Login failed. Please check your credentials.');
   } finally {
     loading.value = false;
   }
