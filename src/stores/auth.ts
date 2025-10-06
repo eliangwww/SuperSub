@@ -28,12 +28,17 @@ export const useAuthStore = defineStore('auth', {
       }
     },
     async login(credentials: { username: string; password: any; }) {
-      const response = await axios.post('/api/auth/login', credentials);
-      const { token, user } = response.data.data;
-      this.token = token;
-      this.user = user;
-      this.isLoggingOut = false; // Reset the flag on successful login
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      try {
+        const response = await axios.post('/api/auth/login', credentials);
+        const { token, user } = response.data.data;
+        this.token = token;
+        this.user = user;
+        this.isLoggingOut = false; // Reset the flag on successful login
+        axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      } catch (error) {
+        // Re-throw the error to be caught by the component
+        throw error;
+      }
     },
     logout() {
       this.isLoggingOut = true;

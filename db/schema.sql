@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE,
   password TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'user',
+  sub_token TEXT UNIQUE,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

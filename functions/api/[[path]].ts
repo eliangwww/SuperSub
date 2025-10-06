@@ -14,27 +14,34 @@ import assetRoutes from './routes/assets';
 import groupRoutes from './routes/groups';
 import systemRoutes from './routes/system';
 import userRoutes from './routes/user';
+import publicRoutes from './routes/public';
 
-export const app = new Hono<{ Bindings: Env }>().basePath('/api');
+export const app = new Hono<{ Bindings: Env }>();
 
 // Middleware
-app.use('*', methodOverrideMiddleware(app));
+app.use('/api/*', methodOverrideMiddleware(app));
 
-// Public routes
-app.route('/auth', authRoutes);
-app.route('/system', systemRoutes);
+// Public subscription routes
+app.route('/s', publicRoutes);
 
-// Authenticated routes
-app.route('/nodes', nodeRoutes);
-app.route('/subscriptions', subscriptionRoutes);
-app.route('/profiles', profileRoutes);
-app.route('/admin', adminRoutes);
-app.route('/assets', assetRoutes);
-app.route('/groups', groupRoutes);
-app.route('/user', userRoutes);
+// API routes
+const api = app.basePath('/api');
+
+// Public API routes
+api.route('/auth', authRoutes);
+api.route('/system', systemRoutes);
+
+// Authenticated API routes
+api.route('/nodes', nodeRoutes);
+api.route('/subscriptions', subscriptionRoutes);
+api.route('/profiles', profileRoutes);
+api.route('/admin', adminRoutes);
+api.route('/assets', assetRoutes);
+api.route('/groups', groupRoutes);
+api.route('/user', userRoutes);
 
 // Other remaining routes from the original file
-app.get('/stats', manualAuthMiddleware, async (c) => {
+api.get('/stats', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const [subscriptions, nodes, profiles] = await Promise.all([
         c.env.DB.prepare('SELECT COUNT(*) as count FROM subscriptions WHERE user_id = ?').bind(user.id).first<{ count: number }>(),
@@ -44,7 +51,7 @@ app.get('/stats', manualAuthMiddleware, async (c) => {
     return c.json({ success: true, data: { subscriptions: subscriptions?.count ?? 0, nodes: nodes?.count ?? 0, profiles: profiles?.count ?? 0 } });
 });
 
-app.get('/node-statuses', manualAuthMiddleware, async (c) => {
+api.get('/node-statuses', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const { results } = await c.env.DB.prepare('SELECT id as node_id, status, latency, last_checked, error FROM nodes WHERE user_id = ?').bind(user.id).all();
     const validStatuses = ['pending', 'testing', 'healthy', 'unhealthy'];
@@ -52,13 +59,13 @@ app.get('/node-statuses', manualAuthMiddleware, async (c) => {
     return c.json({ success: true, data: sanitizedResults });
 });
 
-app.get('/settings', manualAuthMiddleware, async (c) => {
+api.get('/settings', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const { results } = await c.env.DB.prepare('SELECT * FROM settings WHERE user_id = ?').bind(user.id).all();
     return c.json({ success: true, data: results });
 });
 
-app.post('/settings', manualAuthMiddleware, async (c) => {
+api.post('/settings', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
     const settingsToUpdate = await c.req.json<any[]>();
 

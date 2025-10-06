@@ -28,13 +28,29 @@
         </n-space>
       </n-form-item>
     </n-form>
+
+    <n-divider title-placement="left">订阅令牌设置</n-divider>
+    <n-card>
+      <n-space vertical>
+        <n-text>您的私人订阅令牌，用于构建订阅链接。</n-text>
+        <n-input-group>
+          <n-input :value="subToken" readonly placeholder="正在加载..." />
+          <n-button @click="copyToken" type="primary" ghost>
+            复制
+          </n-button>
+        </n-input-group>
+        <n-button @click="resetToken" type="error" ghost :loading="resetLoading">
+          重置令牌
+        </n-button>
+      </n-space>
+    </n-card>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import {
-  NForm, NFormItem, NInput, NButton, useMessage, NDivider, NSpace, NGrid, NFormItemGi
+  NForm, NFormItem, NInput, NButton, useMessage, NDivider, NSpace, NGrid, NFormItemGi, NCard, NInputGroup, NText
 } from 'naive-ui';
 import { api } from '@/utils/api';
 import { useAuthStore } from '@/stores/auth';
@@ -44,11 +60,46 @@ const authStore = useAuthStore();
 const formRef = ref<any>(null);
 const saveLoading = ref(false);
 const testLoading = ref(false);
+const resetLoading = ref(false);
+const subToken = ref('');
 
 const formState = ref({
   telegram_bot_token: '',
   telegram_chat_id: '',
 });
+
+const fetchSubToken = async () => {
+  try {
+    const response = await api.get('/user/sub-token');
+    if (response.data.success) {
+      subToken.value = response.data.data.token;
+    }
+  } catch (error) {
+    message.error('获取订阅令牌失败');
+  }
+};
+
+const copyToken = () => {
+  if (subToken.value) {
+    navigator.clipboard.writeText(subToken.value);
+    message.success('已复制到剪贴板');
+  }
+};
+
+const resetToken = async () => {
+  resetLoading.value = true;
+  try {
+    const response = await api.post('/user/sub-token/reset');
+    if (response.data.success) {
+      subToken.value = response.data.data.token;
+      message.success('订阅令牌已重置');
+    }
+  } catch (error) {
+    message.error('重置订阅令牌失败');
+  } finally {
+    resetLoading.value = false;
+  }
+};
 
 const fetchSettings = async () => {
   if (!authStore.isAuthenticated) {
@@ -116,5 +167,6 @@ const handleTestTelegram = async () => {
 
 onMounted(() => {
   fetchSettings();
+  fetchSubToken();
 });
 </script>

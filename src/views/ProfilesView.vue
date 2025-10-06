@@ -17,6 +17,7 @@ const allSubscriptions = ref<Subscription[]>([]);
 const allManualNodes = ref<Record<string, { id: string; name: string }[]>>({});
 const allBackends = ref<any[]>([]);
 const allConfigs = ref<any[]>([]);
+const subToken = ref('');
 
 // For Edit/Add Modal
 const showEditModal = ref(false);
@@ -102,9 +103,8 @@ const backendOptions = computed(() => allBackends.value.map(b => ({ label: b.nam
 const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name, value: c.id })));
 
 const generatedUrl = computed(() => {
-  if (formState.alias) return `${window.location.origin}/api/profiles/${formState.alias}/subscribe`;
-  if (formState.id) return `${window.location.origin}/api/profiles/${formState.id}/subscribe`;
-  return '';
+  if (!subToken.value || !formState.alias) return '';
+  return `${window.location.origin}/s/${subToken.value}/${formState.alias}/subscribe`;
 });
 
 const copyGeneratedUrl = () => {
@@ -125,10 +125,10 @@ const createColumns = ({ onCopy, onPreview, onEdit, onDelete }: {
       title: '订阅链接',
       key: 'alias',
       render(row) {
-        const url = row.alias
-          ? `${window.location.origin}/api/profiles/${row.alias}/subscribe`
-          : `${window.location.origin}/api/profiles/${row.id}/subscribe`;
-        
+        if (!subToken.value || !row.alias) {
+          return h('span', '请设置链接别名');
+        }
+        const url = `${window.location.origin}/s/${subToken.value}/${row.alias}/subscribe`;
         return h(NButton, { text: true, tag: 'a', href: url, target: '_blank', type: 'primary' }, { default: () => url });
       }
     },
@@ -236,11 +236,22 @@ const fetchProfiles = async () => {
   }
 };
 
+const fetchSubToken = async () => {
+  try {
+    const response = await api.get('/user/sub-token');
+    if (response.data.success) {
+      subToken.value = response.data.data.token;
+    }
+  } catch (error) {
+    message.error('获取订阅令牌失败');
+  }
+};
+
 const fetchAllSources = async () => {
   const authStore = useAuthStore();
   if (!authStore.isAuthenticated) return;
   try {
-    const [subsRes, nodesRes, backendRes, configRes] = await Promise.all([
+    const [subsRes, nodesRes, backendRes, configRes, ] = await Promise.all([
       api.get<ApiResponse<Subscription[]>>('/subscriptions'),
       api.get<ApiResponse<Record<string, any[]>>>('/nodes/grouped'),
       api.get<ApiResponse<any[]>>('/assets?type=backend'),
@@ -325,9 +336,11 @@ const handleDelete = (row: Profile) => {
 };
 
 const handleCopyLink = (row: Profile) => {
-  const url = row.alias
-    ? `${window.location.origin}/api/profiles/${row.alias}/subscribe`
-    : `${window.location.origin}/api/profiles/${row.id}/subscribe`;
+  if (!subToken.value || !row.alias) {
+    message.error('无法复制链接：缺少订阅令牌或链接别名。');
+    return;
+  }
+  const url = `${window.location.origin}/s/${subToken.value}/${row.alias}/subscribe`;
   navigator.clipboard.writeText(url).then(() => message.success('链接已复制'), () => message.error('复制失败'));
 };
 
@@ -358,7 +371,10 @@ const onPreview = async (row: Profile) => {
 
 const columns = createColumns({ onCopy: handleCopyLink, onPreview, onEdit: openEditModal, onDelete: handleDelete });
 
-onMounted(fetchProfiles);
+onMounted(() => {
+  fetchProfiles();
+  fetchSubToken();
+});
 
 </script>
 
