@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   template_variables TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  polling_index INTEGER DEFAULT 0,
   FOREIGN KEY (user_id) REFERENCES users (id),
   FOREIGN KEY (subconverter_backend_id) REFERENCES subconverter_assets (id),
   FOREIGN KEY (subconverter_config_id) REFERENCES subconverter_assets (id),

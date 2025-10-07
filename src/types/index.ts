@@ -90,6 +90,7 @@ export interface Profile {
 
   created_at: string;
   updated_at: string;
+  polling_index?: number;
 }
 
 export interface SubscriptionRule {

@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import type { Env, AppContext } from '../utils/types';
 import { Hono } from 'hono';
 import { userAgents, parseSubscriptionContent, applySubscriptionRules } from './subscriptions';
+import { generateProfileNodes } from './profiles';
 import { regenerateLink } from '../../../src/utils/nodeParser';
 import { sendTelegramMessage } from '../utils/telegram';
 
@@ -88,97 +89,11 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
         const content = JSON.parse(profile.content || '{}');
         const userId = profile.user_id;
 
-    let allNodes: any[] = [];
+    const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile);
 
-    if (content.subscription_ids && content.subscription_ids.length > 0) {
-        const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
-        let { results: subscriptions } = await c.env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
-
-        const airportOptions = content.airport_subscription_options || {};
-
-        if (subscriptions && subscriptions.length > 0) {
-            if (airportOptions.random) {
-                const randomIndex = Math.floor(Math.random() * subscriptions.length);
-                subscriptions = [subscriptions[randomIndex]];
-            } else if (airportOptions.polling) {
-                // Stateless polling based on the current hour.
-                const hour = new Date().getHours();
-                const pollingIndex = hour % subscriptions.length;
-                subscriptions = [subscriptions[pollingIndex]];
-            }
-        }
-
-        for (const sub of subscriptions) {
-            try {
-                const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
-                if (response.ok) {
-                    const subContent = await response.text();
-                    let nodes = parseSubscriptionContent(subContent);
-
-                    const { results: rules } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
-                    if (rules && rules.length > 0) {
-                        nodes = applySubscriptionRules(nodes, rules);
-                    }
-                    const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
-                    allNodes.push(...nodesWithSubName);
-                }
-            } catch (e: any) {
-                console.error(`Failed to process subscription ${sub.id}:`, e);
-            }
-        }
+    if (allNodes.length === 0) {
+        return c.text('No nodes found for this profile.', 404);
     }
-
-        if (content.node_ids && content.node_ids.length > 0) {
-            const nodePlaceholders = content.node_ids.map(() => '?').join(',');
-            const manualNodesQuery = `
-                SELECT n.*, g.name as group_name
-                FROM nodes n
-                LEFT JOIN node_groups g ON n.group_id = g.id
-                WHERE n.id IN (${nodePlaceholders}) AND n.user_id = ?
-            `;
-            const { results: manualNodes } = await c.env.DB.prepare(manualNodesQuery).bind(...content.node_ids, userId).all<any>();
-            
-            const parsedManualNodes = manualNodes.map(n => ({
-                id: n.id,
-                name: n.name,
-                protocol: n.protocol,
-                server: n.server,
-                port: n.port,
-                protocol_params: JSON.parse(n.protocol_params || '{}'),
-                link: n.link,
-                raw: n.link,
-                group_name: n.group_name, // Keep group name for prefixing
-            }));
-
-            const taggedManualNodes = parsedManualNodes.map(node => ({ ...node, isManual: true }));
-            allNodes.push(...taggedManualNodes);
-        }
-
-        if (allNodes.length === 0) {
-            return c.text('No nodes found for this profile.', 404);
-        }
-
-        const prefixSettings = content.node_prefix_settings || {};
-        if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix || prefixSettings.enable_group_name_prefix) {
-            allNodes = allNodes.map(node => {
-                // Subscription prefix logic (unchanged)
-                if (prefixSettings.enable_subscription_prefix && node.subscriptionName) {
-                    return { ...node, name: `${node.subscriptionName} - ${node.name}` };
-                }
-
-                // Manual node prefixing logic (new priority)
-                if (node.isManual) {
-                    if (prefixSettings.enable_group_name_prefix && node.group_name) {
-                        return { ...node, name: `${node.group_name} - ${node.name}` };
-                    }
-                    if (prefixSettings.manual_node_prefix) {
-                        return { ...node, name: `${prefixSettings.manual_node_prefix} - ${node.name}` };
-                    }
-                }
-                
-                return node;
-            });
-        }
 
         const userAgent = c.req.header('User-Agent') || '';
         const query = c.req.query();
