@@ -46,7 +46,16 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
 
         for (const sub of subscriptions) {
             try {
-                const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 seconds timeout
+
+                const response = await fetch(sub.url, {
+                    headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] },
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+
                 if (response.ok) {
                     const subContent = await response.text();
                     let nodes = parseSubscriptionContent(subContent);
@@ -57,9 +66,15 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                     }
                     const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
                     allNodes.push(...nodesWithSubName);
+                } else {
+                    console.error(`Failed to fetch subscription ${sub.id}: Status ${response.status}`);
                 }
-            } catch (e) {
-                console.error(`Failed to process subscription ${sub.id}:`, e);
+            } catch (e: any) {
+                if (e.name === 'AbortError') {
+                    console.error(`Subscription ${sub.id} timed out.`);
+                } else {
+                    console.error(`Failed to process subscription ${sub.id}:`, e);
+                }
             }
         }
     }
