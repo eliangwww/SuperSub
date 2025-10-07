@@ -8,6 +8,7 @@ export interface User {
   id: string;
   username: string;
   role: 'admin' | 'user';
+  sub_token?: string;
   created_at: string;
   updated_at: string;
 }

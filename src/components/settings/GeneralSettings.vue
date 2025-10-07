@@ -34,9 +34,12 @@
       <n-space vertical>
         <n-text>您的私人订阅令牌，用于构建订阅链接。</n-text>
         <n-input-group>
-          <n-input :value="subToken" readonly placeholder="正在加载..." />
+          <n-input v-model:value="subToken" placeholder="正在加载..." />
           <n-button @click="copyToken" type="primary" ghost>
             复制
+          </n-button>
+          <n-button @click="saveToken" type="primary" :loading="saveTokenLoading">
+            保存
           </n-button>
         </n-input-group>
         <n-button @click="resetToken" type="error" ghost :loading="resetLoading">
@@ -45,12 +48,31 @@
       </n-space>
     </n-card>
   </div>
+
+  <n-divider title-placement="left">修改密码</n-divider>
+  <n-form ref="passwordFormRef" :model="passwordFormState" :rules="passwordRules" label-placement="top">
+    <n-grid :cols="2" :x-gap="24">
+      <n-form-item-gi label="新密码" path="password">
+        <n-input
+          v-model:value="passwordFormState.password"
+          type="password"
+          placeholder="输入新密码"
+          show-password-on="click"
+        />
+      </n-form-item-gi>
+    </n-grid>
+    <n-form-item>
+      <n-button type="primary" @click="handlePasswordChange" :loading="passwordChangeLoading">
+        修改密码
+      </n-button>
+    </n-form-item>
+  </n-form>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import {
-  NForm, NFormItem, NInput, NButton, useMessage, NDivider, NSpace, NGrid, NFormItemGi, NCard, NInputGroup, NText
+  NForm, NFormItem, NInput, NButton, useMessage, NDivider, NSpace, NGrid, NFormItemGi, NCard, NInputGroup, NText, type FormInst, type FormRules
 } from 'naive-ui';
 import { api } from '@/utils/api';
 import { useAuthStore } from '@/stores/auth';
@@ -62,12 +84,25 @@ const formRef = ref<any>(null);
 const saveLoading = ref(false);
 const testLoading = ref(false);
 const resetLoading = ref(false);
+const saveTokenLoading = ref(false);
+const passwordChangeLoading = ref(false);
 const subToken = ref('');
+const passwordFormRef = ref<FormInst | null>(null);
 
 const formState = ref({
   telegram_bot_token: '',
   telegram_chat_id: '',
 });
+
+const passwordFormState = ref({
+  password: '',
+});
+
+const passwordRules: FormRules = {
+  password: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+  ]
+};
 
 const fetchSubToken = async () => {
   if (!authStore.isAuthenticated) {
@@ -100,12 +135,28 @@ const resetToken = async () => {
     const response = await api.post('/user/sub-token/reset');
     if (response.data.success) {
       subToken.value = response.data.data.token;
+      authStore.updateTokenAndUser(response.data.data);
       message.success('订阅令牌已重置');
     }
   } catch (error) {
     message.error('重置订阅令牌失败');
   } finally {
     resetLoading.value = false;
+  }
+};
+
+const saveToken = async () => {
+  saveTokenLoading.value = true;
+  try {
+    const response = await api.put('/user/sub-token', { token: subToken.value });
+    if (response.data.success) {
+      authStore.updateTokenAndUser(response.data.data);
+      message.success('订阅令牌已保存');
+    }
+  } catch (error: any) {
+    message.error(error.response?.data?.message || '保存订阅令牌失败');
+  } finally {
+    saveTokenLoading.value = false;
   }
 };
 
@@ -169,6 +220,23 @@ const handleTestTelegram = async () => {
   } finally {
     testLoading.value = false;
   }
+};
+
+const handlePasswordChange = async () => {
+  passwordFormRef.value?.validate(async (errors) => {
+    if (!errors) {
+      passwordChangeLoading.value = true;
+      try {
+        await api.put('/user/password', { password: passwordFormState.value.password });
+        message.success('密码修改成功');
+        passwordFormState.value.password = ''; // Clear password field
+      } catch (error: any) {
+        message.error(error.response?.data?.message || '修改密码失败');
+      } finally {
+        passwordChangeLoading.value = false;
+      }
+    }
+  });
 };
 
 onMounted(() => {

@@ -6,7 +6,7 @@ import { User } from '@/types';
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     user: null as User | null,
-    token: null,
+    token: null as string | null,
     isLoggingOut: false,
     isRegistrationAllowed: true, // Default to true
   }),
@@ -52,6 +52,11 @@ export const useAuthStore = defineStore('auth', {
       } finally {
         this.isLoggingOut = false; // Reset the flag after logout is complete
       }
+    },
+    updateTokenAndUser(data: { jwt: string, user: User }) {
+      this.token = data.jwt;
+      this.user = data.user;
+      axios.defaults.headers.common['Authorization'] = `Bearer ${data.jwt}`;
     },
     async fetchUser() {
       if (this.token && !this.user) {

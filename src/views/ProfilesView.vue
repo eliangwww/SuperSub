@@ -18,7 +18,8 @@ const allSubscriptions = ref<Subscription[]>([]);
 const allManualNodes = ref<Record<string, { id: string; name: string }[]>>({});
 const allBackends = ref<any[]>([]);
 const allConfigs = ref<any[]>([]);
-const subToken = ref('');
+const authStore = useAuthStore();
+const subToken = computed(() => authStore.user?.sub_token || '');
 
 // For Edit/Add Modal
 const showEditModal = ref(false);
@@ -245,24 +246,6 @@ const fetchProfiles = async () => {
   }
 };
 
-const fetchSubToken = async () => {
-  const authStore = useAuthStore();
-  if (!authStore.isAuthenticated) {
-    return;
-  }
-  try {
-    const response = await api.get('/user/sub-token');
-    if (response.data.success) {
-      subToken.value = response.data.data.token;
-    }
-  } catch (error) {
-    if (error instanceof LogoutInProgressError) {
-      console.log('Logout in progress, skipping sub token fetch.');
-      return;
-    }
-    message.error('获取订阅令牌失败');
-  }
-};
 
 const fetchAllSources = async () => {
   const authStore = useAuthStore();
@@ -390,7 +373,6 @@ const columns = createColumns({ onCopy: handleCopyLink, onPreview, onEdit: openE
 
 onMounted(() => {
   fetchProfiles();
-  fetchSubToken();
 });
 
 </script>
