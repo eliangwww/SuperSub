@@ -5,60 +5,136 @@ import { v4 as uuidv4 } from 'uuid';
 export type ParsedNode = Omit<Node, 'id' | 'user_id' | 'group_id' | 'created_at' | 'updated_at' | 'sort_order' | 'status' | 'latency' | 'last_checked' | 'error'>;
 
 
-// A simple Base64 decoder that works in both browser and Node.js environments
+// A robust Base64 decoder that handles URL-safe encoding and padding issues.
 const base64Decode = (str: string): string => {
-  try {
-    // Modern browsers have atob, but it can't handle UTF-8 characters.
-    // A common trick is to use a sequence of URI-encoding and decoding to handle all characters.
-    const decoded = atob(str.replace(/-/g, '+').replace(/_/g, '/'));
-    return decodeURIComponent(
-      Array.prototype.map
-        .call(decoded, (c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-        .join('')
-    );
-  } catch (e) {
-    console.error('Failed to decode base64 string:', str, e);
-    // Fallback for non-browser environments or if the above fails
-    try {
-        if (typeof Buffer !== 'undefined') {
-            return Buffer.from(str, 'base64').toString('utf-8');
-        }
-    } catch (bufferError) {
-        console.error('Buffer decoding also failed:', bufferError);
+    let output = str.replace(/-/g, '+').replace(/_/g, '/');
+    switch (output.length % 4) {
+        case 0:
+            break;
+        case 2:
+            output += '==';
+            break;
+        case 3:
+            output += '=';
+            break;
+        default:
+            throw new Error('Illegal base64url string!');
     }
-    return ''; // Return empty string if all methods fail
-  }
+
+    try {
+        // Use atob for browser environments, which is faster.
+        // The decodeURIComponent trick handles UTF-8 characters correctly.
+        const decoded = atob(output);
+        return decodeURIComponent(
+            Array.prototype.map
+                .call(decoded, (c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+                .join('')
+        );
+    } catch (e) {
+        console.error('Failed to decode base64 string with atob:', str, e);
+        // Fallback to Buffer for Node.js environments or if atob fails.
+        try {
+            if (typeof Buffer !== 'undefined') {
+                return Buffer.from(output, 'base64').toString('utf-8');
+            }
+        } catch (bufferError) {
+            console.error('Buffer decoding also failed:', bufferError);
+        }
+        return ''; // Return empty string if all methods fail.
+    }
 };
 
 const parseVmess = (link: string): ParsedNode | null => {
-  if (!link.startsWith('vmess://')) return null;
+    if (!link.startsWith('vmess://')) return null;
 
-  try {
-    const encodedData = link.substring(8);
-    const decodedJson = base64Decode(encodedData);
-    const config = JSON.parse(decodedJson);
+    const data = link.substring(8);
 
-    if (!config.add || !config.port || !config.id) return null;
+    // Strategy 1: Check for URL-like format (contains '@')
+    if (data.includes('@')) {
+        try {
+            const atIndex = data.lastIndexOf('@');
+            const credentials = data.substring(0, atIndex);
+            const serverPart = data.substring(atIndex + 1);
+
+            // Reconstruct a parsable URL. The protocol doesn't matter as much as the structure.
+            const parsableLink = `vmess://${serverPart}`;
+            const url = new URL(parsableLink);
+
+            const [method, uuid] = credentials.split(':');
+            if (!uuid) throw new Error('Invalid VMess credentials format.');
+
+            const name = decodeURIComponent(url.hash.substring(1)) || url.hostname;
+            const server = url.hostname;
+            const port = Number(url.port);
+
+            if (!server || !port) return null;
+
+            const protocol_params: Record<string, any> = {
+                id: uuid,
+                security: method,
+            };
+            for (const [key, value] of url.searchParams.entries()) {
+                protocol_params[key] = value;
+            }
+            
+            // Standardize common parameters
+            protocol_params.add = server;
+            protocol_params.port = port;
+            protocol_params.aid = protocol_params.alterId || '0';
+            protocol_params.net = protocol_params.obfs || 'tcp';
+            protocol_params.type = 'none';
+            protocol_params.host = protocol_params.obfsParam || '';
+            protocol_params.path = protocol_params.path || '';
+            protocol_params.tls = protocol_params.tls === '1' || protocol_params.tls === 'tls' ? 'tls' : '';
+
+            return {
+                name,
+                link,
+                protocol: 'vmess',
+                protocol_params,
+                server,
+                port,
+                type: 'vmess',
+                password: uuid,
+                params: protocol_params,
+            };
+        } catch (error) {
+            console.error('Failed to parse VMess URL-like format:', link, error);
+            return null; // If it has '@' but fails parsing, it's likely invalid.
+        }
+    }
     
-    const protocol_params = { ...config };
-    delete protocol_params.ps; // This is the 'name'
+    // Strategy 2: Treat as Base64-encoded JSON (legacy format)
+    try {
+        const decodedJson = base64Decode(data);
+        if (!decodedJson) return null; // Stop if decoding fails
 
-    return {
-      name: config.ps || `${config.add}:${config.port}`,
-      link: link,
-      protocol: 'vmess',
-      protocol_params: protocol_params,
-      // Legacy fields for compatibility
-      server: config.add,
-      port: Number(config.port),
-      type: 'vmess',
-      password: config.id,
-      params: protocol_params,
-    };
-  } catch (error) {
-    console.error('Failed to parse VMess link:', link, error);
+        const config = JSON.parse(decodedJson);
+
+        if (config.add && config.port && config.id) {
+            const protocol_params = { ...config };
+            delete protocol_params.ps; // 'ps' is the remarks/name
+
+            return {
+                name: config.ps || `${config.add}:${config.port}`,
+                link: link,
+                protocol: 'vmess',
+                protocol_params: protocol_params,
+                server: config.add,
+                port: Number(config.port),
+                type: 'vmess',
+                password: config.id, // UUID
+                params: protocol_params,
+            };
+        }
+    } catch (error) {
+        console.error('Failed to parse VMess Base64 format:', link, error);
+        return null;
+    }
+
+    // If neither strategy works, return null.
+    console.error('Failed to parse VMess link with any strategy:', link);
     return null;
-  }
 };
 
 const parseHysteria2 = (link: string): ParsedNode | null => {

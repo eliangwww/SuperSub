@@ -9,6 +9,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useGroupStore, type NodeGroup } from '@/stores/groups';
 import { FlashOutline as FlashIcon, EllipsisVertical as MoreIcon, ReorderFourOutline as DragHandleIcon } from '@vicons/ionicons5';
 import { parseNodeLinks, ParsedNode } from '@/utils/nodeParser';
+import { getNaiveTagColor } from '@/utils/colors';
 import { useApi } from '@/composables/useApi';
 
 const api = useApi();
@@ -118,25 +119,12 @@ const createColumns = ({ onTest, onEdit, onDelete }: {
       sorter: 'default',
       width: 120,
       render(row) {
-        const protocol = row.protocol || row.type;
-        if (!protocol) return h('span', {}, 'N/A');
-
-        const colorMap: Record<string, string> = {
-          vmess: '#ff69b4',
-          vless: '#8a2be2',
-          trojan: '#dc143c',
-          ss: '#00bfff',
-          hysteria2: '#20b2aa',
-          tuic: '#7b68ee',
-        };
-        
-        const tagColor = {
-          color: colorMap[protocol.toLowerCase()] || '#7f8c8d',
-          textColor: '#ffffff',
-          borderColor: 'transparent'
-        };
-
-        return h(NTag, { size: 'small', round: true, color: tagColor }, { default: () => protocol.toUpperCase() });
+        const protocol = row.protocol || row.type || 'N/A';
+        return h(NTag, {
+            size: 'small',
+            round: true,
+            color: getNaiveTagColor(protocol, 'protocol')
+        }, { default: () => protocol.toUpperCase() });
       }
     },
     {

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, computed, h, watch } from 'vue';
 import axios from 'axios';
-import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NSpin, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar, NTabs, NTabPane, NCollapse, NCollapseItem, NSwitch } from 'naive-ui';
+import { useMessage, useDialog, NButton, NSpace, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NSpin, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar, NTabs, NTabPane, NCollapse, NCollapseItem, NSwitch, NTag, NStatistic } from 'naive-ui';
 import type { DataTableColumns, FormInst } from 'naive-ui';
 import { Pencil as EditIcon, TrashBinOutline as DeleteIcon, CopyOutline as CopyIcon, EyeOutline as PreviewIcon } from '@vicons/ionicons5';
 import { api } from '@/utils/api';
 import { useAuthStore } from '@/stores/auth';
 import { LogoutInProgressError } from '@/utils/errors';
 import type { ApiResponse, Profile, Subscription, Node } from '@/types';
+import { regenerateLink, type ParsedNode } from '@/utils/nodeParser';
+import { getNaiveTagColor } from '@/utils/colors';
 
 const message = useMessage();
 const dialog = useDialog();
@@ -33,6 +35,10 @@ const defaultFormState = () => ({
   alias: '',
   subscription_ids: [] as string[],
   node_ids: [] as string[],
+  airport_subscription_options: {
+    polling: false,
+    random: false,
+  },
   node_prefix_settings: {
     enable_subscription_prefix: false,
     manual_node_prefix: '',
@@ -77,6 +83,24 @@ const handleGroupSelectAll = (group: { id: string; name: string }[], checked: bo
   }
 };
 
+const isAllSubscriptionsSelected = computed(() => {
+  return filteredSubscriptionOptions.value.length > 0 &&
+         formState.subscription_ids.length === filteredSubscriptionOptions.value.length;
+});
+
+const isSubscriptionIndeterminate = computed(() => {
+  return formState.subscription_ids.length > 0 &&
+         formState.subscription_ids.length < filteredSubscriptionOptions.value.length;
+});
+
+const handleSelectAllSubscriptions = (checked: boolean) => {
+  if (checked) {
+    formState.subscription_ids = filteredSubscriptionOptions.value.map(sub => sub.value);
+  } else {
+    formState.subscription_ids = [];
+  }
+};
+
 const isGroupSelected = (group: { id: string; name: string }[]) => {
   const groupNodeIds = new Set(group.map(node => node.id));
   return group.length > 0 && [...groupNodeIds].every(id => formState.node_ids.includes(id));
@@ -95,6 +119,19 @@ watch(() => formState.node_prefix_settings.enable_group_name_prefix, (newValue: 
   }
 });
 
+// Watch for changes in polling and random switches to enforce mutual exclusion
+watch(() => formState.airport_subscription_options.polling, (newValue: boolean) => {
+  if (newValue) {
+    formState.airport_subscription_options.random = false;
+  }
+});
+
+watch(() => formState.airport_subscription_options.random, (newValue: boolean) => {
+  if (newValue) {
+    formState.airport_subscription_options.polling = false;
+  }
+});
+
 
 const rules = {
   name: { required: true, message: '请输入名称', trigger: ['input', 'blur'] },
@@ -104,9 +141,45 @@ const modalTitle = computed(() => (editingProfile.value ? '编辑配置' : '新�
 
 const previewNodeColumns: DataTableColumns<Partial<Node>> = [
   { title: '节点名称', key: 'name', ellipsis: { tooltip: true } },
-  { title: '类型', key: 'type', width: 80, align: 'center' },
+  {
+    title: '类型',
+    key: 'type',
+    width: 100,
+    align: 'center',
+    render(row) {
+        const protocol = row.protocol || row.type || 'N/A';
+        return h(NTag, {
+            size: 'small',
+            round: true,
+            color: getNaiveTagColor(protocol, 'protocol')
+        }, { default: () => protocol.toUpperCase() });
+    }
+  },
   { title: '服务器', key: 'server', width: 150, ellipsis: { tooltip: true } },
   { title: '端口', key: 'port', width: 80, align: 'center' },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 100,
+    align: 'center',
+    render(row) {
+      return h(NButton, {
+        size: 'tiny',
+        ghost: true,
+        type: 'primary',
+        onClick: () => {
+          // The row object from preview is a ParsedNode.
+          const link = regenerateLink(row as ParsedNode);
+          if (link) {
+            navigator.clipboard.writeText(link);
+            message.success('已复制完整链接');
+          } else {
+            message.error('无法生成链接');
+          }
+        }
+      }, { default: () => '复制链接' });
+    }
+  }
 ];
 
 const backendOptions = computed(() => allBackends.value.map(b => ({ label: b.name, value: b.id })));
@@ -184,6 +257,10 @@ const openEditModal = async (profile: Profile | null = null) => {
           ...defaultFormState().node_prefix_settings,
           ...content.node_prefix_settings
         };
+        formState.airport_subscription_options = {
+          ...defaultFormState().airport_subscription_options,
+          ...content.airport_subscription_options
+        };
         formState.subconverter_backend_id = content.subconverter_backend_id || null;
         formState.subconverter_config_id = content.subconverter_config_id || null;
       } catch (e) {
@@ -192,6 +269,7 @@ const openEditModal = async (profile: Profile | null = null) => {
         formState.subscription_ids = [];
         formState.node_ids = [];
         formState.node_prefix_settings = { ...defaultFormState().node_prefix_settings };
+        formState.airport_subscription_options = { ...defaultFormState().airport_subscription_options };
         formState.subconverter_backend_id = null;
         formState.subconverter_config_id = null;
       }
@@ -279,6 +357,7 @@ const handleSave = async () => {
         subscription_ids: formState.subscription_ids,
         node_ids: formState.node_ids,
         node_prefix_settings: formState.node_prefix_settings,
+        airport_subscription_options: formState.airport_subscription_options,
         subconverter_backend_id: formState.subconverter_backend_id,
         subconverter_config_id: formState.subconverter_config_id,
         generation_mode: 'online',
@@ -420,18 +499,37 @@ onMounted(() => {
         <!-- Region 2: Data Sources & Processing -->
         <n-divider title-placement="left">数据源与内容处理</n-divider>
         <n-tabs type="line" animated>
-          <n-tab-pane name="subscriptions" tab="订阅">
+          <n-tab-pane name="subscriptions" tab="机场订阅">
             <n-card size="small" :bordered="true">
+              <template #header>
+                <n-checkbox
+                  :checked="isAllSubscriptionsSelected"
+                  :indeterminate="isSubscriptionIndeterminate"
+                  @update:checked="handleSelectAllSubscriptions"
+                >
+                  全选
+                </n-checkbox>
+              </template>
               <template #header-extra>
                 <n-input v-model:value="subFilter" size="small" placeholder="筛选" clearable />
               </template>
-              <n-scrollbar style="max-height: 300px;">
+              <n-scrollbar style="max-height: 250px;">
                 <n-checkbox-group v-model:value="formState.subscription_ids">
                   <n-space vertical>
                     <n-checkbox v-for="sub in filteredSubscriptionOptions" :key="sub.value" :value="sub.value" :label="sub.label" />
                   </n-space>
                 </n-checkbox-group>
               </n-scrollbar>
+              <template #footer>
+                <n-space align="center">
+                  <n-form-item label="轮询" label-placement="left" class="mb-0">
+                    <n-switch v-model:value="formState.airport_subscription_options.polling" />
+                  </n-form-item>
+                  <n-form-item label="随机" label-placement="left" class="mb-0">
+                    <n-switch v-model:value="formState.airport_subscription_options.random" />
+                  </n-form-item>
+                </n-space>
+              </template>
             </n-card>
           </n-tab-pane>
           <n-tab-pane name="manual-nodes" tab="手工节点">
@@ -517,14 +615,14 @@ onMounted(() => {
               <n-gi>
                 <n-statistic label="协议分布">
                   <n-space>
-                    <n-tag v-for="(count, protocol) in nodesPreviewData.analysis.protocols" :key="protocol" type="info">{{ protocol.toUpperCase() }}: {{ count }}</n-tag>
+                   <n-tag v-for="(count, protocol) in nodesPreviewData.analysis.protocols" :key="protocol" :color="getNaiveTagColor(protocol, 'protocol')" round>{{ protocol.toUpperCase() }}: {{ count }}</n-tag>
                   </n-space>
                 </n-statistic>
               </n-gi>
               <n-gi>
                 <n-statistic label="地区分布">
                    <n-space :size="'small'" style="flex-wrap: wrap;">
-                    <n-tag v-for="(count, region) in nodesPreviewData.analysis.regions" :key="region" type="success">{{ region }}: {{ count }}</n-tag>
+                    <n-tag v-for="(count, region) in nodesPreviewData.analysis.regions" :key="region" :color="getNaiveTagColor(region, 'region')" round>{{ region }}: {{ count }}</n-tag>
                   </n-space>
                 </n-statistic>
               </n-gi>

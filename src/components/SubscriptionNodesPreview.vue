@@ -3,7 +3,9 @@ import { ref, onMounted, h, watch, computed } from 'vue';
 import { useMessage, NDataTable, NSpin, NTag, NEmpty, NButton, NSpace, NSwitch, NTooltip } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { Node, ApiResponse } from '@/types';
+import { regenerateLink, type ParsedNode } from '@/utils/nodeParser';
 import { api } from '@/utils/api';
+import { getNaiveTagColor } from '@/utils/colors';
 
 const props = defineProps({
   subscriptionId: {
@@ -34,22 +36,12 @@ const columns: DataTableColumns<Partial<Node>> = [
         width: 100,
         align: 'center',
         render(row) {
-            const protocol = row.protocol || row.type;
-            if (!protocol) return h('span', {}, 'N/A');
-
-            const colorMap: Record<string, string> = {
-                vmess: '#ff69b4', vless: '#8a2be2', trojan: '#dc143c', ss: '#00bfff',
-                hysteria2: '#20b2aa', tuic: '#7b68ee', 'http': '#2ecc71', 'https': '#27ae60',
-                'socks5': '#f1c40f', 'hysteria': '#1abc9c', 'ssr': '#e67e22',
-            };
-            
-            const tagColor = {
-                color: colorMap[protocol.toLowerCase()] || '#7f8c8d',
-                textColor: '#ffffff',
-                borderColor: 'transparent'
-            };
-
-            return h(NTag, { size: 'small', round: true, color: tagColor }, { default: () => protocol.toUpperCase() });
+            const protocol = row.protocol || row.type || 'N/A';
+            return h(NTag, {
+                size: 'small',
+                round: true,
+                color: getNaiveTagColor(protocol, 'protocol')
+            }, { default: () => protocol.toUpperCase() });
         }
     },
     { title: '服务器', key: 'server', ellipsis: { tooltip: true }, width: 180 },
@@ -66,8 +58,16 @@ const columns: DataTableColumns<Partial<Node>> = [
                 ghost: true,
                 type: 'primary',
                 onClick: () => {
-                    navigator.clipboard.writeText(row.raw || '');
-                    message.success('已复制原始链接');
+                   // The row object from preview is a ParsedNode.
+                   const link = regenerateLink(row as ParsedNode);
+                   if (link) {
+                       navigator.clipboard.writeText(link);
+                       message.success('已复制完整链接');
+                   } else {
+                       // Fallback for safety, though regenerateLink should be reliable.
+                       navigator.clipboard.writeText(row.raw || '');
+                       message.success('已复制原始链接 (回退)');
+                   }
                 }
             }, { default: () => '复制链接' });
         }

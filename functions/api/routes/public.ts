@@ -92,7 +92,21 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
 
     if (content.subscription_ids && content.subscription_ids.length > 0) {
         const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
-        const { results: subscriptions } = await c.env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
+        let { results: subscriptions } = await c.env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
+
+        const airportOptions = content.airport_subscription_options || {};
+
+        if (subscriptions && subscriptions.length > 0) {
+            if (airportOptions.random) {
+                const randomIndex = Math.floor(Math.random() * subscriptions.length);
+                subscriptions = [subscriptions[randomIndex]];
+            } else if (airportOptions.polling) {
+                // Stateless polling based on the current hour.
+                const hour = new Date().getHours();
+                const pollingIndex = hour % subscriptions.length;
+                subscriptions = [subscriptions[pollingIndex]];
+            }
+        }
 
         for (const sub of subscriptions) {
             try {

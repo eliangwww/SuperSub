@@ -73,6 +73,10 @@ export interface Profile {
     enable_subscription_prefix?: boolean;
     manual_node_prefix?: string;
   };
+  airport_subscription_options?: {
+    polling?: boolean;
+    random?: boolean;
+  };
 
   // Generation mode fields
   generation_mode?: 'local' | 'online';
