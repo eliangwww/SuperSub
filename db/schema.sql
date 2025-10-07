@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   updated_at TEXT NOT NULL,
   include_keywords TEXT,
   exclude_keywords TEXT,
+  expires_at DATETIME,
+  subscription_info TEXT,
   FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 

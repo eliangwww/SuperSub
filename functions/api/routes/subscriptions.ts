@@ -141,9 +141,46 @@ export const applySubscriptionRules = (nodes: (ParsedNode & { id: string; raw: s
 };
 
 
+// Helper to parse 'subscription-userinfo' header
+const parseSubscriptionInfo = (userInfo: string): { upload: number; download: number; total: number; expire: number | null } => {
+    const info: any = {};
+    userInfo.split(';').forEach(part => {
+        const [key, value] = part.split('=').map(s => s.trim());
+        if (key && value) {
+            const parsedValue = parseInt(value, 10);
+            info[key] = isNaN(parsedValue) ? 0 : parsedValue;
+        }
+    });
+    return {
+        upload: info.upload || 0,
+        download: info.download || 0,
+        total: info.total || 0,
+        expire: info.expire || null,
+    };
+};
+
+// Helper to extract info from content using regex
+const extractInfoFromContent = (content: string): { expire: number | null } => {
+    // Regex for remaining days or specific expiry date
+    const expireRegex = /(?:剩余天数|可用天数|Expire(?:s|d)?\s*(?:in|on)?)\s*[:：]?\s*(\d+)|(?:到期时间|过期时间)\s*[:：]?\s*(\d{4}-\d{2}-\d{2})/;
+    const match = content.match(expireRegex);
+
+    if (match) {
+        if (match[1]) { // Matched remaining days
+            const days = parseInt(match[1], 10);
+            return { expire: Math.floor((Date.now() / 1000) + (days * 86400)) };
+        }
+        if (match[2]) { // Matched a specific date
+            return { expire: Math.floor(new Date(match[2]).getTime() / 1000) };
+        }
+    }
+    return { expire: null };
+};
+
+
 subscriptions.get('/', async (c) => {
     const user = c.get('jwtPayload');
-    const { results } = await c.env.DB.prepare('SELECT * FROM subscriptions WHERE user_id = ?').bind(user.id).all();
+    const { results } = await c.env.DB.prepare('SELECT * FROM subscriptions WHERE user_id = ? ORDER BY created_at DESC').bind(user.id).all();
     return c.json({ success: true, data: results });
 });
 
@@ -210,18 +247,39 @@ subscriptions.post('/update-all', async (c) => {
         try {
             const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
             if (response.ok) {
+                const userInfoHeader = response.headers.get('subscription-userinfo');
+                let subscriptionInfo = null;
+                let expiresAt: string | null = null;
+
+                if (userInfoHeader) {
+                    subscriptionInfo = userInfoHeader;
+                    const info = parseSubscriptionInfo(userInfoHeader);
+                    if (info.expire) {
+                        // Assuming expire is a Unix timestamp in seconds
+                        expiresAt = new Date(info.expire * 1000).toISOString();
+                    }
+                }
+
                 const buffer = await response.arrayBuffer();
                 const decoder = new TextDecoder('utf-8');
                 let content = decoder.decode(buffer, { stream: true });
                 if (content.charCodeAt(0) === 0xFEFF) { // Remove BOM
                     content = content.slice(1);
                 }
+
+                // If no expire info from header, try to find it in content
+                if (!expiresAt) {
+                    const infoFromContent = extractInfoFromContent(content);
+                    if (infoFromContent.expire) {
+                        expiresAt = new Date(infoFromContent.expire * 1000).toISOString();
+                    }
+                }
                 
                 const nodeCount = getAccurateNodeCount(content);
                 const now = new Date().toISOString();
                 await c.env.DB.prepare(
-                    'UPDATE subscriptions SET node_count = ?, last_updated = ?, error = NULL WHERE id = ?'
-                ).bind(nodeCount, now, sub.id).run();
+                    'UPDATE subscriptions SET node_count = ?, last_updated = ?, error = NULL, expires_at = ?, subscription_info = ? WHERE id = ?'
+                ).bind(nodeCount, now, expiresAt, subscriptionInfo, sub.id).run();
                 updatedCount++;
             } else {
                  const error = `Failed to fetch: ${response.statusText}`;
@@ -322,6 +380,19 @@ subscriptions.post('/:id/update', async (c) => {
             return c.json({ success: false, message: error }, 502);
         }
         
+        const userInfoHeader = response.headers.get('subscription-userinfo');
+        let subscriptionInfo = null;
+        let expiresAt: string | null = null;
+
+        if (userInfoHeader) {
+            subscriptionInfo = userInfoHeader;
+            const info = parseSubscriptionInfo(userInfoHeader);
+            if (info.expire) {
+                // Assuming expire is a Unix timestamp in seconds
+                expiresAt = new Date(info.expire * 1000).toISOString();
+            }
+        }
+
         const buffer = await response.arrayBuffer();
         const decoder = new TextDecoder('utf-8');
         let content = decoder.decode(buffer, { stream: true });
@@ -329,12 +400,20 @@ subscriptions.post('/:id/update', async (c) => {
             content = content.slice(1);
         }
 
+        // If no expire info from header, try to find it in content
+        if (!expiresAt) {
+            const infoFromContent = extractInfoFromContent(content);
+            if (infoFromContent.expire) {
+                expiresAt = new Date(infoFromContent.expire * 1000).toISOString();
+            }
+        }
+
         const nodeCount = getAccurateNodeCount(content);
         const now = new Date().toISOString();
 
         await c.env.DB.prepare(
-            'UPDATE subscriptions SET node_count = ?, last_updated = ?, error = NULL WHERE id = ?'
-        ).bind(nodeCount, now, id).run();
+            'UPDATE subscriptions SET node_count = ?, last_updated = ?, error = NULL, expires_at = ?, subscription_info = ? WHERE id = ?'
+        ).bind(nodeCount, now, expiresAt, subscriptionInfo, id).run();
 
         return c.json({ success: true, message: `Subscription updated successfully. Found ${nodeCount} nodes.` });
     } catch (error: any) {
@@ -425,6 +504,24 @@ subscriptions.delete('/:id', async (c) => {
     const { id } = c.req.param();
     await c.env.DB.prepare('DELETE FROM subscriptions WHERE id = ? AND user_id = ?').bind(id, user.id).run();
     return c.json({ success: true });
+});
+
+subscriptions.post('/batch-delete', async (c) => {
+    const user = c.get('jwtPayload');
+    const { ids } = await c.req.json<{ ids: string[] }>();
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+        return c.json({ success: false, message: 'No subscription IDs provided' }, 400);
+    }
+
+    const placeholders = ids.map(() => '?').join(',');
+    const query = `DELETE FROM subscriptions WHERE user_id = ? AND id IN (${placeholders})`;
+    
+    const bindings = [user.id, ...ids];
+    
+    await c.env.DB.prepare(query).bind(...bindings).run();
+
+    return c.json({ success: true, message: `Successfully deleted ${ids.length} subscriptions.` });
 });
 
 export default subscriptions;
