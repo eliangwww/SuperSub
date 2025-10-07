@@ -24,7 +24,7 @@ const showModal = ref(false)
 const saveLoading = ref(false)
 const updatingId = ref<string | null>(null)
 const editingSubscription = ref<Subscription | null>(null)
-const updatingAll = ref(false)
+const updatingIds = ref(new Set<string>()) // For individual and batch updates
 const activeTab = ref('all')
 
 // For bulk import
@@ -124,12 +124,14 @@ const formatBytes = (bytes: number, decimals = 2) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
-const parseSubscriptionInfo = (info: string) => {
+const parseSubscriptionInfo = (info: string | null | undefined) => {
+    if (!info) return {};
     const data: Record<string, number> = {};
     info.split(';').forEach(part => {
         const [key, value] = part.split('=').map(s => s.trim());
         if (key && value) {
-            data[key] = parseInt(value, 10);
+            const parsedValue = parseFloat(value);
+            data[key] = isNaN(parsedValue) ? 0 : parsedValue;
         }
     });
     return data;
@@ -182,15 +184,18 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
       render(row) {
         if (!row.subscription_info) return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
         const info = parseSubscriptionInfo(row.subscription_info);
-        const remaining = info.total - (info.upload + info.download);
-        if (isNaN(remaining) || info.total === 0) {
+        const used = (info.upload || 0) + (info.download || 0);
+        const total = info.total || 0;
+        const remaining = total - used;
+        
+        if (total === 0 || remaining < 0) {
             return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
         }
-        const usagePercentage = (info.upload + info.download) / info.total;
+        const usagePercentage = used / total;
         let tagType: 'success' | 'warning' | 'error' = 'success';
         if (usagePercentage > 0.9) tagType = 'error';
         else if (usagePercentage > 0.7) tagType = 'warning';
-        const tooltipContent = `总流量: ${formatBytes(info.total)}\n已用(U/D): ${formatBytes(info.upload)} / ${formatBytes(info.download)}`;
+        const tooltipContent = `总流量: ${formatBytes(total)}\n已用(U/D): ${formatBytes(info.upload || 0)} / ${formatBytes(info.download || 0)}`;
         return h(NTooltip, null, {
           trigger: () => h(NTag, { type: tagType, size: 'small', round: true }, { default: () => formatBytes(remaining) }),
           default: () => h('pre', { style: 'white-space: pre-wrap;' }, tooltipContent),
@@ -247,7 +252,7 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
             createTooltipButton('预览节点', EyeOutline, () => onPreviewNodes(row)),
             createTooltipButton('规则', FilterOutline, () => onManageRules(row), { type: 'info' }),
             createTooltipButton('编辑', CreateOutline, () => onEdit(row)),
-            createTooltipButton('更新', SyncOutline, () => onUpdate(row), { type: 'primary', loading: updatingId.value === row.id }),
+            createTooltipButton('更新', SyncOutline, () => onUpdate(row), { type: 'primary', loading: updatingId.value === row.id || updatingIds.value.has(row.id) }),
             createTooltipButton('删除', TrashOutline, () => onDelete(row), { type: 'error' }),
           ]
         })
@@ -336,21 +341,32 @@ const handleDelete = (row: Subscription) => {
   })
 }
 
-const handleUpdate = async (row: Subscription) => {
+const handleUpdate = async (row: Subscription, silent = false) => {
   updatingId.value = row.id
-  message.info('正在更新订阅，请稍候...')
+  updatingIds.value.add(row.id)
+  if (!silent) {
+    message.info(`正在更新订阅 [${row.name}]...`)
+  }
   try {
     const response = await api.post<ApiResponse>(`/subscriptions/${row.id}/update`)
     if (response.data.success) {
-      message.success(response.data.message || '更新成功')
+      if (!silent) message.success(`订阅 [${row.name}] 更新成功`)
     } else {
-      message.error(response.data.message || '更新失败')
+      if (!silent) message.error(response.data.message || `订阅 [${row.name}] 更新失败`)
     }
-    fetchSubscriptions()
+    // Find the updated subscription and update it in the local state
+    const index = subscriptions.value.findIndex(s => s.id === row.id)
+    if (index !== -1 && response.data.data) {
+      subscriptions.value[index] = response.data.data as Subscription
+    } else {
+      // Fallback to a full refetch if something goes wrong
+      fetchSubscriptions()
+    }
   } catch (err) {
-    message.error('请求失败，请稍后重试')
+    if (!silent) message.error('请求失败，请稍后重试')
   } finally {
     updatingId.value = null
+    updatingIds.value.delete(row.id)
   }
 }
 
@@ -370,23 +386,49 @@ const openImportModal = () => {
 }
 
 const handleUpdateAll = async () => {
-  updatingAll.value = true
-  message.info('已启动所有订阅的后台更新...')
-  try {
-    const response = await api.post<ApiResponse>('/subscriptions/update-all')
-    if (response.data.success) {
-      message.success(response.data.message || '后台更新任务已启动')
-      setTimeout(() => {
-        fetchSubscriptions()
-      }, 5000)
-    } else {
-      message.error(response.data.message || '启动更新失败')
-    }
-  } catch (err) {
-    message.error('请求失败，请稍后重试')
-  } finally {
-    updatingAll.value = false
+  const subsToUpdate = subscriptions.value.filter(s => s.enabled)
+  if (subsToUpdate.length === 0) {
+    message.info('没有已启用的订阅需要更新')
+    return
   }
+
+  message.info(`开始更新 ${subsToUpdate.length} 个已启用的订阅...`)
+  
+  const CONCURRENT_LIMIT = 5
+  const promises = []
+
+  for (const sub of subsToUpdate) {
+    // We pass silent=true to avoid spamming messages for each update
+    const promise = handleUpdate(sub, true)
+      .then(() => ({ id: sub.id, status: 'success' }))
+      .catch(error => ({ id: sub.id, status: 'error', error }))
+    promises.push(promise)
+  }
+
+  // This doesn't handle concurrency yet, let's implement a pool
+  const executeInPool = async (poolLimit: number, tasks: (() => Promise<any>)[]) => {
+      const results: any[] = []
+      const executing = new Set<Promise<any>>()
+      for (const task of tasks) {
+          const p = Promise.resolve().then(() => task())
+          results.push(p)
+          executing.add(p)
+          const clean = () => executing.delete(p)
+          p.then(clean).catch(clean)
+          if (executing.size >= poolLimit) {
+              await Promise.race(executing)
+          }
+      }
+      return Promise.all(results)
+  }
+
+  const tasks = subsToUpdate.map(sub => () => handleUpdate(sub, true))
+  
+  await executeInPool(CONCURRENT_LIMIT, tasks)
+
+  message.success('所有已启用的订阅更新完成！')
+  // Final refresh after all are done
+  fetchSubscriptions()
 }
 
 const handleBulkImport = async () => {
@@ -720,7 +762,7 @@ onMounted(() => {
       </template>
       <template #extra>
         <n-space>
-          <n-button type="primary" ghost @click="handleUpdateAll" :loading="updatingAll">更新全部</n-button>
+          <n-button type="primary" ghost @click="handleUpdateAll" :loading="updatingIds.size > 0">更新全部</n-button>
           <n-button type="primary" @click="openModal(null)">新增订阅</n-button>
           <n-button type="info" @click="openImportModal">批量导入</n-button>
           <n-button type="primary" ghost @click="showAddGroupModal = true">新增分组</n-button>

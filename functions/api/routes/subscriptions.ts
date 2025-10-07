@@ -147,7 +147,8 @@ const parseSubscriptionInfo = (userInfo: string): { upload: number; download: nu
     userInfo.split(';').forEach(part => {
         const [key, value] = part.split('=').map(s => s.trim());
         if (key && value) {
-            const parsedValue = parseInt(value, 10);
+            // Use parseFloat to handle potential non-integer values, though spec is integer bytes
+            const parsedValue = parseFloat(value);
             info[key] = isNaN(parsedValue) ? 0 : parsedValue;
         }
     });
@@ -159,22 +160,65 @@ const parseSubscriptionInfo = (userInfo: string): { upload: number; download: nu
     };
 };
 
-// Helper to extract info from content using regex
-const extractInfoFromContent = (content: string): { expire: number | null } => {
-    // Regex for remaining days or specific expiry date
-    const expireRegex = /(?:剩余天数|可用天数|Expire(?:s|d)?\s*(?:in|on)?)\s*[:：]?\s*(\d+)|(?:到期时间|过期时间)\s*[:：]?\s*(\d{4}-\d{2}-\d{2})/;
-    const match = content.match(expireRegex);
+const sizeToBytes = (sizeStr: string): number => {
+    if (!sizeStr) return 0;
+    const match = sizeStr.match(/([\d.]+)\s*(TB|GB|MB|KB|T|G|M|K)?/i);
+    if (!match) return 0;
 
-    if (match) {
-        if (match[1]) { // Matched remaining days
-            const days = parseInt(match[1], 10);
-            return { expire: Math.floor((Date.now() / 1000) + (days * 86400)) };
-        }
-        if (match[2]) { // Matched a specific date
-            return { expire: Math.floor(new Date(match[2]).getTime() / 1000) };
+    const size = parseFloat(match[1]);
+    const unit = (match[2] || '').toUpperCase();
+
+    switch (unit) {
+        case 'TB': case 'T': return size * Math.pow(1024, 4);
+        case 'GB': case 'G': return size * Math.pow(1024, 3);
+        case 'MB': case 'M': return size * Math.pow(1024, 2);
+        case 'KB': case 'K': return size * 1024;
+        default: return size;
+    }
+};
+
+const bytesToSize = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+
+// Final, simplified, and correct approach.
+const extractInfoFromNodeNames = (nodeNames: string[]): { upload: number; download: number; total: number; expire: number | null } => {
+    const text = nodeNames.join(' '); // Combine all node names into a single string
+    const result = { upload: 0, download: 0, total: 0, expire: null as number | null };
+
+    // --- Simplified Data Usage Extraction ---
+    const remainingMatch = text.match(/剩余流量[\:：]([\d.]+\s*[TGMK]B?)/i);
+    if (remainingMatch) {
+        const remainingBytes = sizeToBytes(remainingMatch[1]);
+        // When only "remaining" is available, we can treat it as the total available from this point.
+        result.total = remainingBytes;
+        result.download = 0;
+        result.upload = 0;
+    }
+
+    // --- Simplified Expiry Info Extraction ---
+    const expiryDateMatch = text.match(/套餐到期[\:：](\d{4}-\d{2}-\d{2})/i);
+    if (expiryDateMatch) {
+        const date = new Date(expiryDateMatch[1]);
+        if (!isNaN(date.getTime())) {
+            result.expire = Math.floor(date.getTime() / 1000);
         }
     }
-    return { expire: null };
+
+    const remainingDaysMatch = text.match(/(?:距离下次重置剩余|剩余|可用)[\:：](\d+)\s*天/i);
+    if (remainingDaysMatch && !result.expire) { // Avoid overwriting a specific date
+        const days = parseInt(remainingDaysMatch[1], 10);
+        if (!isNaN(days)) {
+            result.expire = Math.floor((Date.now() / 1000) + (days * 86400));
+        }
+    }
+    
+    return result;
 };
 
 
@@ -231,6 +275,62 @@ subscriptions.post('/batch-import', async (c) => {
     return c.json({ success: true, data: { message: `Successfully imported ${subs.length} subscriptions.` } });
 });
 
+// This function will be called by both individual and batch updates.
+const updateSingleSubscription = async (db: D1Database, sub: { id: string; url: string }): Promise<{ success: boolean; data?: any; error?: string }> => {
+    try {
+        const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
+        if (!response.ok) {
+            const error = `Failed to fetch: ${response.status} ${response.statusText}`;
+            await db.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), error, sub.id).run();
+            return { success: false, error };
+        }
+
+        const userInfoHeader = response.headers.get('subscription-userinfo');
+        const rawContent = await response.text();
+
+        // The correct, final logic:
+        // 1. Parse content into structured nodes, this handles all formats (YAML, Base64, etc.)
+        const nodes = parseSubscriptionContent(rawContent);
+        const nodeCount = nodes.length;
+
+        // 2. Extract info from the names of the parsed nodes.
+        const infoFromNodes = extractInfoFromNodeNames(nodes.map(n => n.name));
+        
+        // 3. Get header info as a fallback.
+        let headerInfo: { upload: number; download: number; total: number; expire: number | null } = { upload: 0, download: 0, total: 0, expire: null };
+        if (userInfoHeader) {
+            headerInfo = parseSubscriptionInfo(userInfoHeader);
+        }
+
+        // 4. Combine, giving node-extracted info priority.
+        const finalInfo = {
+            upload: infoFromNodes.upload > 0 ? infoFromNodes.upload : headerInfo.upload,
+            download: infoFromNodes.download > 0 ? infoFromNodes.download : headerInfo.download,
+            total: infoFromNodes.total > 0 ? infoFromNodes.total : headerInfo.total,
+            expire: infoFromNodes.expire ? infoFromNodes.expire : headerInfo.expire,
+        };
+
+        const subscriptionInfoString = `upload=${finalInfo.upload};download=${finalInfo.download};total=${finalInfo.total}`;
+        const expiresAt = finalInfo.expire ? new Date(finalInfo.expire * 1000).toISOString() : null;
+        
+        const now = new Date().toISOString();
+
+        await db.prepare(
+            'UPDATE subscriptions SET node_count = ?, last_updated = ?, error = NULL, expires_at = ?, subscription_info = ? WHERE id = ?'
+        ).bind(nodeCount, now, expiresAt, subscriptionInfoString, sub.id).run();
+
+        const updatedSub = await db.prepare('SELECT * FROM subscriptions WHERE id = ?').bind(sub.id).first();
+
+        return { success: true, data: updatedSub };
+
+    } catch (error: any) {
+        const errorMessage = `Update failed: ${error.message}`;
+        await db.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), errorMessage, sub.id).run();
+        return { success: false, error: errorMessage };
+    }
+};
+
+
 subscriptions.post('/update-all', async (c) => {
     const user = c.get('jwtPayload');
     const { results: subs } = await c.env.DB.prepare(
@@ -241,57 +341,26 @@ subscriptions.post('/update-all', async (c) => {
         return c.json({ success: true, message: 'No enabled subscriptions to update.' });
     }
 
+    const CONCURRENCY_LIMIT = 5;
     let updatedCount = 0;
-    // This is a simplified sequential update. A real-world scenario might use queues.
-    for (const sub of subs) {
-        try {
-            const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
-            if (response.ok) {
-                const userInfoHeader = response.headers.get('subscription-userinfo');
-                let subscriptionInfo = null;
-                let expiresAt: string | null = null;
+    let failedCount = 0;
 
-                if (userInfoHeader) {
-                    subscriptionInfo = userInfoHeader;
-                    const info = parseSubscriptionInfo(userInfoHeader);
-                    if (info.expire) {
-                        // Assuming expire is a Unix timestamp in seconds
-                        expiresAt = new Date(info.expire * 1000).toISOString();
-                    }
-                }
+    for (let i = 0; i < subs.length; i += CONCURRENCY_LIMIT) {
+        const chunk = subs.slice(i, i + CONCURRENCY_LIMIT);
+        const promises = chunk.map(sub => updateSingleSubscription(c.env.DB, sub));
+        
+        const results = await Promise.all(promises);
 
-                const buffer = await response.arrayBuffer();
-                const decoder = new TextDecoder('utf-8');
-                let content = decoder.decode(buffer, { stream: true });
-                if (content.charCodeAt(0) === 0xFEFF) { // Remove BOM
-                    content = content.slice(1);
-                }
-
-                // If no expire info from header, try to find it in content
-                if (!expiresAt) {
-                    const infoFromContent = extractInfoFromContent(content);
-                    if (infoFromContent.expire) {
-                        expiresAt = new Date(infoFromContent.expire * 1000).toISOString();
-                    }
-                }
-                
-                const nodeCount = getAccurateNodeCount(content);
-                const now = new Date().toISOString();
-                await c.env.DB.prepare(
-                    'UPDATE subscriptions SET node_count = ?, last_updated = ?, error = NULL, expires_at = ?, subscription_info = ? WHERE id = ?'
-                ).bind(nodeCount, now, expiresAt, subscriptionInfo, sub.id).run();
+        for (const result of results) {
+            if (result.success) {
                 updatedCount++;
             } else {
-                 const error = `Failed to fetch: ${response.statusText}`;
-                 await c.env.DB.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), error, sub.id).run();
+                failedCount++;
             }
-        } catch (error: any) {
-            const errorMessage = `Update failed: ${error.message}`;
-            await c.env.DB.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), errorMessage, sub.id).run();
         }
     }
 
-    return c.json({ success: true, message: `Updated ${updatedCount} out of ${subs.length} subscriptions.` });
+    return c.json({ success: true, message: `Update complete. ${updatedCount} succeeded, ${failedCount} failed.` });
 });
 
 subscriptions.post('/preview', async (c) => {
@@ -303,9 +372,10 @@ subscriptions.post('/preview', async (c) => {
     }
 
     try {
+        console.log(`[PREVIEW] Starting preview for URL: ${url}`);
         const response = await fetch(url, {
             headers: {
-                'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
+                'User-Agent': 'clash-verge',
             },
         });
 
@@ -367,59 +437,17 @@ subscriptions.post('/:id/update', async (c) => {
     const user = c.get('jwtPayload');
     const { id } = c.req.param();
 
-    const subscription = await c.env.DB.prepare('SELECT url FROM subscriptions WHERE id = ? AND user_id = ?').bind(id, user.id).first<{ url: string }>();
+    const subscription = await c.env.DB.prepare('SELECT id, url FROM subscriptions WHERE id = ? AND user_id = ?').bind(id, user.id).first<{ id: string, url: string }>();
     if (!subscription) {
         return c.json({ success: false, message: 'Subscription not found' }, 404);
     }
 
-    try {
-        const response = await fetch(subscription.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
-        if (!response.ok) {
-            const error = `Failed to fetch: ${response.status} ${response.statusText}`;
-            await c.env.DB.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), error, id).run();
-            return c.json({ success: false, message: error }, 502);
-        }
-        
-        const userInfoHeader = response.headers.get('subscription-userinfo');
-        let subscriptionInfo = null;
-        let expiresAt: string | null = null;
+    const result = await updateSingleSubscription(c.env.DB, subscription);
 
-        if (userInfoHeader) {
-            subscriptionInfo = userInfoHeader;
-            const info = parseSubscriptionInfo(userInfoHeader);
-            if (info.expire) {
-                // Assuming expire is a Unix timestamp in seconds
-                expiresAt = new Date(info.expire * 1000).toISOString();
-            }
-        }
-
-        const buffer = await response.arrayBuffer();
-        const decoder = new TextDecoder('utf-8');
-        let content = decoder.decode(buffer, { stream: true });
-        if (content.charCodeAt(0) === 0xFEFF) { // Remove BOM
-            content = content.slice(1);
-        }
-
-        // If no expire info from header, try to find it in content
-        if (!expiresAt) {
-            const infoFromContent = extractInfoFromContent(content);
-            if (infoFromContent.expire) {
-                expiresAt = new Date(infoFromContent.expire * 1000).toISOString();
-            }
-        }
-
-        const nodeCount = getAccurateNodeCount(content);
-        const now = new Date().toISOString();
-
-        await c.env.DB.prepare(
-            'UPDATE subscriptions SET node_count = ?, last_updated = ?, error = NULL, expires_at = ?, subscription_info = ? WHERE id = ?'
-        ).bind(nodeCount, now, expiresAt, subscriptionInfo, id).run();
-
-        return c.json({ success: true, message: `Subscription updated successfully. Found ${nodeCount} nodes.` });
-    } catch (error: any) {
-        const errorMessage = `Update failed: ${error.message}`;
-        await c.env.DB.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), errorMessage, id).run();
-        return c.json({ success: false, message: errorMessage }, 500);
+    if (result.success) {
+        return c.json({ success: true, message: `Subscription updated successfully.`, data: result.data });
+    } else {
+        return c.json({ success: false, message: result.error }, 500);
     }
 });
 
