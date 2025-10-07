@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, h, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane, NDropdown } from 'naive-ui'
+import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane, NDropdown, NProgress, NCollapse, NCollapseItem } from 'naive-ui'
 import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline, EllipsisVertical as MoreIcon } from '@vicons/ionicons5'
 import type { DataTableColumns, FormInst, DropdownOption } from 'naive-ui'
 import { Subscription, Node, ApiResponse } from '@/types'
@@ -61,6 +61,16 @@ const activeDropdownGroup = ref<import('@/stores/subscriptionGroups').Subscripti
 const showNodePreviewModal = ref(false)
 const currentSubscriptionForPreview = ref<Subscription | null>(null)
 const nodePreviewRef = ref<{ fetchPreview: () => void } | null>(null)
+
+// For Update All Log
+const showUpdateLogModal = ref(false)
+const updateLog = ref<{
+  success: { name: string }[]
+  failed: { id: string, name: string, error: string }[]
+}>({ success: [], failed: [] })
+const updateLogLoading = ref(false)
+const updateProgress = ref({ current: 0, total: 0 })
+let updateAbortController: AbortController | null = null
 
 // For Subscription Rules
 const showRulesModal = ref(false)
@@ -366,29 +376,34 @@ const handleDelete = (row: Subscription) => {
   })
 }
 
-const handleUpdate = async (row: Subscription, silent = false) => {
+const handleUpdate = async (row: Subscription, silent = false, signal?: AbortSignal): Promise<{ success: boolean; name: string; id: string; error?: string }> => {
   updatingId.value = row.id
   updatingIds.value.add(row.id)
   if (!silent) {
     message.info(`正在更新订阅 [${row.name}]...`)
   }
   try {
-    const response = await api.post<ApiResponse>(`/subscriptions/${row.id}/update`)
-    if (response.data.success) {
-      if (!silent) message.success(`订阅 [${row.name}] 更新成功`)
-    } else {
-      if (!silent) message.error(response.data.message || `订阅 [${row.name}] 更新失败`)
-    }
-    // Find the updated subscription and update it in the local state
+    const response = await api.post<ApiResponse<Subscription>>(`/subscriptions/${row.id}/update`, {}, { signal })
     const index = subscriptions.value.findIndex(s => s.id === row.id)
     if (index !== -1 && response.data.data) {
-      subscriptions.value[index] = response.data.data as Subscription
-    } else {
-      // Fallback to a full refetch if something goes wrong
-      fetchSubscriptions()
+      subscriptions.value[index] = response.data.data
     }
-  } catch (err) {
-    if (!silent) message.error('请求失败，请稍后重试')
+
+    if (response.data.success) {
+      if (!silent) message.success(`订阅 [${row.name}] 更新成功`)
+      return { success: true, name: row.name, id: row.id }
+    } else {
+      const errorMsg = response.data.message || `订阅 [${row.name}] 更新失败`
+      if (!silent) message.error(errorMsg)
+      return { success: false, name: row.name, id: row.id, error: errorMsg }
+    }
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      return { success: false, name: row.name, id: row.id, error: '已中止' }
+    }
+    const errorMsg = err.message || '请求失败，请稍后重试'
+    if (!silent) message.error(errorMsg)
+    return { success: false, name: row.name, id: row.id, error: errorMsg }
   } finally {
     updatingId.value = null
     updatingIds.value.delete(row.id)
@@ -410,50 +425,91 @@ const openImportModal = () => {
   showImportModal.value = true
 }
 
-const handleUpdateAll = async () => {
-  const subsToUpdate = subscriptions.value.filter(s => s.enabled)
+// A generic function to execute updates in a concurrent pool with progress
+const executeSubscriptionUpdates = async (subsToUpdate: Subscription[]) => {
   if (subsToUpdate.length === 0) {
-    message.info('没有已启用的订阅需要更新')
+    message.info('没有需要更新的订阅')
     return
   }
 
-  message.info(`开始更新 ${subsToUpdate.length} 个已启用的订阅...`)
-  
+  message.info(`开始更新 ${subsToUpdate.length} 个订阅...`)
+  updateLog.value = { success: [], failed: [] }
+  updateProgress.value = { current: 0, total: subsToUpdate.length }
+  showUpdateLogModal.value = true
+  updateLogLoading.value = true
+
+  updateAbortController = new AbortController()
+  const signal = updateAbortController.signal
+
   const CONCURRENT_LIMIT = 5
-  const promises = []
-
-  for (const sub of subsToUpdate) {
-    // We pass silent=true to avoid spamming messages for each update
-    const promise = handleUpdate(sub, true)
-      .then(() => ({ id: sub.id, status: 'success' }))
-      .catch(error => ({ id: sub.id, status: 'error', error }))
-    promises.push(promise)
-  }
-
-  // This doesn't handle concurrency yet, let's implement a pool
-  const executeInPool = async (poolLimit: number, tasks: (() => Promise<any>)[]) => {
-      const results: any[] = []
-      const executing = new Set<Promise<any>>()
-      for (const task of tasks) {
-          const p = Promise.resolve().then(() => task())
-          results.push(p)
-          executing.add(p)
-          const clean = () => executing.delete(p)
-          p.then(clean).catch(clean)
-          if (executing.size >= poolLimit) {
-              await Promise.race(executing)
-          }
-      }
-      return Promise.all(results)
-  }
-
-  const tasks = subsToUpdate.map(sub => () => handleUpdate(sub, true))
+  const tasks = subsToUpdate.map(sub => () => handleUpdate(sub, true, signal))
   
-  await executeInPool(CONCURRENT_LIMIT, tasks)
+  const executing = new Set<Promise<any>>()
 
-  message.success('所有已启用的订阅更新完成！')
-  // Final refresh after all are done
-  fetchSubscriptions()
+  try {
+    for (const [index, task] of tasks.entries()) {
+      if (signal.aborted) {
+        // Mark remaining tasks as aborted in the log
+        subsToUpdate.slice(index).forEach(sub => {
+          updateLog.value.failed.push({ id: sub.id, name: sub.name, error: '已中止' })
+        })
+        break
+      }
+      const p = task().then(result => {
+        updateProgress.value.current++
+        if (result.success) {
+          updateLog.value.success.push({ name: result.name })
+        } else {
+          // Aborted tasks are also treated as failed here
+          updateLog.value.failed.push({ id: result.id, name: result.name, error: result.error || '未知错误' })
+        }
+      })
+      executing.add(p)
+      p.finally(() => executing.delete(p))
+      if (executing.size >= CONCURRENT_LIMIT) {
+        await Promise.race(executing)
+      }
+    }
+    await Promise.all(executing)
+  } catch (error) {
+    // This should not be reached if errors are handled inside `handleUpdate`
+    console.error('An unexpected error occurred during update execution:', error)
+  } finally {
+    updateLogLoading.value = false
+    if (signal.aborted) {
+      message.warning('更新任务已中止')
+    } else {
+      message.success('订阅更新任务完成！')
+    }
+    updateAbortController = null
+  }
+}
+
+const handleUpdateAll = () => {
+  // If there are checked rows, update them. Otherwise, update all enabled.
+  const subsToUpdate = checkedRowKeys.value.length > 0
+    ? subscriptions.value.filter(s => checkedRowKeys.value.includes(s.id))
+    : subscriptions.value.filter(s => s.enabled)
+  
+  executeSubscriptionUpdates(subsToUpdate)
+}
+
+const handleRetryFailed = () => {
+  const failedSubsInfo = [...updateLog.value.failed].filter(s => s.error !== '已中止')
+  if (failedSubsInfo.length === 0) {
+    message.info('没有失败的订阅可以重试')
+    return
+  }
+  const subsToRetry = subscriptions.value.filter(s => failedSubsInfo.some(fs => fs.id === s.id))
+  executeSubscriptionUpdates(subsToRetry)
+}
+
+const handleCancelUpdate = () => {
+  if (updateLogLoading.value && updateAbortController) {
+    updateAbortController.abort()
+  } else {
+    showUpdateLogModal.value = false
+  }
 }
 
 const handleBulkImport = async () => {
@@ -673,39 +729,10 @@ const handleContextMenu = (group: import('@/stores/subscriptionGroups').Subscrip
   }, 50)
 }
 
-const handleUpdateGroupSubscriptions = async (groupId: string) => {
+const handleUpdateGroupSubscriptions = (groupId: string) => {
   const subsToUpdate = subscriptions.value.filter(s => s.group_id === groupId && s.enabled)
-  if (subsToUpdate.length === 0) {
-    message.info('该分组下没有已启用的订阅需要更新')
-    return
-  }
-
-  const groupName = subscriptionGroupStore.groups.find(g => g.id === groupId)?.name || '该分组'
-  message.info(`开始更新【${groupName}】中的 ${subsToUpdate.length} 个已启用的订阅...`)
-
-  const CONCURRENT_LIMIT = 5
-  const tasks = subsToUpdate.map(sub => () => handleUpdate(sub, true))
-
-  const executeInPool = async (poolLimit: number, tasks: (() => Promise<any>)[]) => {
-      const results: any[] = []
-      const executing = new Set<Promise<any>>()
-      for (const task of tasks) {
-          const p = Promise.resolve().then(() => task())
-          results.push(p)
-          executing.add(p)
-          const clean = () => executing.delete(p)
-          p.then(clean).catch(clean)
-          if (executing.size >= poolLimit) {
-              await Promise.race(executing)
-          }
-      }
-      return Promise.all(results)
-  }
-
-  await executeInPool(CONCURRENT_LIMIT, tasks)
-
-  message.success(`【${groupName}】中的订阅更新完成！`)
-  fetchSubscriptions()
+  // The generic function will handle the case where there are no subscriptions to update.
+  executeSubscriptionUpdates(subsToUpdate)
 }
 
 
@@ -921,7 +948,9 @@ onMounted(() => {
       </template>
       <template #extra>
         <n-space>
-          <n-button type="primary" ghost @click="handleUpdateAll" :loading="updatingIds.size > 0">更新全部</n-button>
+          <n-button type="primary" ghost @click="handleUpdateAll" :loading="updatingIds.size > 0">
+            {{ checkedRowKeys.length > 0 ? `更新选中 (${checkedRowKeys.length})` : '更新全部' }}
+          </n-button>
           <n-button type="primary" @click="openModal(null)">新增订阅</n-button>
           <n-button type="info" @click="openImportModal">批量导入</n-button>
           <n-button type="primary" ghost @click="showAddGroupModal = true">新增分组</n-button>
@@ -1213,6 +1242,60 @@ onMounted(() => {
         </n-space>
       </n-form>
     </n-modal>
+
+    <n-modal
+      v-model:show="showUpdateLogModal"
+      preset="card"
+      title="更新日志"
+      style="width: 600px;"
+      :mask-closable="false"
+    >
+      <div v-if="updateLogLoading" class="text-center mb-4">
+        <n-progress
+          type="line"
+          :percentage="updateProgress.total > 0 ? Math.floor((updateProgress.current / updateProgress.total) * 100) : 0"
+          :indicator-placement="'inside'"
+          processing
+        />
+        <p class="mt-2">正在更新: {{ updateProgress.current }} / {{ updateProgress.total }}</p>
+      </div>
+      <n-collapse>
+        <n-collapse-item :title="`更新成功 (${updateLog.success.length})`" name="success">
+          <div style="max-height: 200px; overflow-y: auto;">
+            <n-tag v-for="sub in updateLog.success" :key="sub.name" type="success" class="m-1">
+              {{ sub.name }}
+            </n-tag>
+            <n-text v-if="updateLog.success.length === 0">没有订阅成功更新。</n-text>
+          </div>
+        </n-collapse-item>
+        <n-collapse-item :title="`更新失败 (${updateLog.failed.length})`" name="failed">
+           <div style="max-height: 200px; overflow-y: auto;">
+            <div v-if="updateLog.failed.length > 0">
+              <div v-for="sub in updateLog.failed" :key="sub.id" class="mb-2 p-1">
+                <n-tag type="error" class="mr-2">{{ sub.name }}</n-tag>
+                <n-text class="text-xs text-gray-500">{{ sub.error }}</n-text>
+              </div>
+            </div>
+            <n-text v-else>没有订阅更新失败。</n-text>
+          </div>
+        </n-collapse-item>
+      </n-collapse>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="handleCancelUpdate">{{ updateLogLoading ? '中止' : '关闭' }}</n-button>
+          <n-button
+            type="primary"
+            ghost
+            @click="handleRetryFailed"
+            :disabled="updateLog.failed.filter(s => s.error !== '已中止').length === 0 || updateLogLoading"
+            :loading="updateLogLoading"
+          >
+            重试失败的订阅
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
   </div>
 </template>
 

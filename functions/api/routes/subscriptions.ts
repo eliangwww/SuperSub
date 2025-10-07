@@ -314,7 +314,8 @@ const updateSingleSubscription = async (db: D1Database, sub: { id: string; url: 
         if (!response.ok) {
             const error = `Failed to fetch: ${response.status} ${response.statusText}`;
             await db.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), error, sub.id).run();
-            return { success: false, error };
+            const updatedSub = await db.prepare('SELECT * FROM subscriptions WHERE id = ?').bind(sub.id).first();
+            return { success: false, error, data: updatedSub };
         }
 
         const userInfoHeader = response.headers.get('subscription-userinfo');
@@ -362,7 +363,8 @@ const updateSingleSubscription = async (db: D1Database, sub: { id: string; url: 
             errorMessage = 'Update failed: The request timed out after 10 seconds.';
         }
         await db.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), errorMessage, sub.id).run();
-        return { success: false, error: errorMessage };
+        const updatedSub = await db.prepare('SELECT * FROM subscriptions WHERE id = ?').bind(sub.id).first();
+        return { success: false, error: errorMessage, data: updatedSub };
     }
 };
 
@@ -483,7 +485,9 @@ subscriptions.post('/:id/update', async (c) => {
     if (result.success) {
         return c.json({ success: true, message: `Subscription updated successfully.`, data: result.data });
     } else {
-        return c.json({ success: false, message: result.error }, 500);
+        // Even on failure, we return a 200 OK with success: false
+        // The frontend can then handle the error message and update the specific subscription's state
+        return c.json({ success: false, message: result.error, data: result.data });
     }
 });
 
