@@ -7,6 +7,7 @@ import type { DataTableColumns } from 'naive-ui';
 import { Node } from '@/types';
 import { useAuthStore } from '@/stores/auth';
 import { useGroupStore, type NodeGroup } from '@/stores/groups';
+import { useNodeStatusStore } from '@/stores/nodeStatus';
 import { FlashOutline as FlashIcon, EllipsisVertical as MoreIcon, ReorderFourOutline as DragHandleIcon } from '@vicons/ionicons5';
 import { parseNodeLinks, ParsedNode } from '@/utils/nodeParser';
 import { getNaiveTagColor } from '@/utils/colors';
@@ -17,9 +18,10 @@ const message = useMessage();
 const dialog = useDialog();
 const authStore = useAuthStore();
 const groupStore = useGroupStore();
+const nodeStatusStore = useNodeStatusStore();
 const nodes = ref<Node[]>([]);
 const loading = ref(true);
-const checkingAll = ref(false);
+const checkingAll = computed(() => nodeStatusStore.loading);
 const checkedRowKeys = ref<string[]>([]);
 const filterKeyword = ref('');
 const activeTab = ref('all');
@@ -112,14 +114,14 @@ const createColumns = ({ onTest, onEdit, onDelete }: {
       width: 80,
       align: 'center',
       render(row) {
-        switch (row.status) {
+        const status = nodeStatusStore.getStatusByNodeId(row.id);
+        switch (status?.status) {
           case 'healthy':
             return h(NIcon, { color: '#63e2b7', size: 20 }, { default: () => '●' });
           case 'unhealthy':
             return h(NIcon, { color: '#e88080', size: 20 }, { default: () => '●' });
           case 'testing':
             return h(NSpin, { size: 'small' });
-          case 'pending':
           default:
             return h(NIcon, { color: '#cccccc', size: 20 }, { default: () => '●' });
         }
@@ -148,11 +150,13 @@ const createColumns = ({ onTest, onEdit, onDelete }: {
       width: 100,
       sorter: (a, b) => (a.latency ?? Infinity) - (b.latency ?? Infinity),
       render(row) {
-        if (row.latency === undefined || row.latency === null) {
+        const status = nodeStatusStore.getStatusByNodeId(row.id);
+        const latency = status?.latency;
+        if (latency === undefined || latency === null) {
           return h(NTag, { type: 'default', size: 'small', round: true }, { default: () => 'N/A' });
         }
-        const type = row.latency < 200 ? 'success' : row.latency < 500 ? 'warning' : 'error';
-        return h(NTag, { type, size: 'small', round: true }, { default: () => `${row.latency}ms` });
+        const type = latency < 200 ? 'success' : latency < 500 ? 'warning' : 'error';
+        return h(NTag, { type, size: 'small', round: true }, { default: () => `${latency}ms` });
       }
     },
     {
@@ -162,7 +166,7 @@ const createColumns = ({ onTest, onEdit, onDelete }: {
       render(row) {
         return h(NSpace, null, {
           default: () => [
-            h(NButton, { size: 'small', circle: true, tertiary: true, onClick: () => testNode(row), disabled: true }, { icon: () => h(NIcon, null, { default: () => h(FlashIcon) }) }),
+            h(NButton, { size: 'small', circle: true, tertiary: true, onClick: () => testNode(row), loading: nodeStatusStore.getStatusByNodeId(row.id)?.status === 'testing' }, { icon: () => h(NIcon, null, { default: () => h(FlashIcon) }) }),
             h(NButton, { size: 'small', onClick: () => handleEditNode(row) }, { default: () => '编辑' }),
             h(NButton, { size: 'small', type: 'error', ghost: true, onClick: () => handleDeleteNode(row) }, { default: () => '删除' }),
           ]
@@ -190,31 +194,35 @@ const fetchData = async () => {
 };
 
 const testNode = async (node: Node) => {
-  const nodeInArray = nodes.value.find(n => n.id === node.id);
-  if (nodeInArray) {
-    nodeInArray.status = 'testing';
+  const result = await nodeStatusStore.checkNodesHealth([node.id]);
+  if (result.success) {
+    message.info(result.message);
+  } else {
+    message.error(result.message);
   }
+};
 
-  try {
-    const response = await api.post(`/nodes/${node.id}/test`, {});
-    if (response.success) {
-      message.info(response.message || `节点 "${node.name}" 的健康检查已启动`);
-    } else {
-      message.error(response.message || '启动健康检查失败');
-      if (nodeInArray) {
-        nodeInArray.status = 'pending';
-      }
-    }
-  } catch (err: any) {
-    message.error(err.message || '请求失败，请稍后重试');
-    if (nodeInArray) {
-      nodeInArray.status = 'pending';
-    }
+const testNodes = async (nodesToTest: Node[]) => {
+  if (nodesToTest.length === 0) {
+    message.warning('没有需要测试的节点。');
+    return;
+  }
+  const nodeIds = nodesToTest.map(n => n.id);
+  const result = await nodeStatusStore.checkNodesHealth(nodeIds);
+  if (result.success) {
+    message.info(result.message);
+  } else {
+    message.error(result.message);
   }
 };
 
 const testAllNodes = () => {
-  message.warning('该功能正在维护中，已暂时禁用。');
+  testNodes(filteredNodes.value);
+};
+
+const testSelectedNodes = () => {
+  const selectedNodes = nodes.value.filter(n => checkedRowKeys.value.includes(n.id));
+  testNodes(selectedNodes);
 };
 
 const showModal = ref(false);
@@ -566,9 +574,11 @@ const handleMoveToGroup = async () => {
 onMounted(() => {
   fetchData();
   groupStore.fetchGroups();
+  nodeStatusStore.fetchStatuses(); // Initial fetch
 });
 
 onBeforeUnmount(() => {
+  // No more polling timer to clear
 });
 </script>
 
@@ -590,7 +600,8 @@ onBeforeUnmount(() => {
           <n-button type="error" @click="handleBatchAction('clear')">一键清空</n-button>
           <n-button type="primary" ghost @click="showMoveToGroupModal = true" :disabled="checkedRowKeys.length === 0">移动到分组</n-button>
           <n-button type="error" ghost @click="handleBatchDelete" :disabled="checkedRowKeys.length === 0">批量删除</n-button>
-          <n-button type="primary" ghost @click="testAllNodes" :loading="checkingAll">检查所有节点</n-button>
+          <n-button type="primary" ghost @click="testSelectedNodes" :disabled="checkedRowKeys.length === 0">检查选中</n-button>
+          <n-button type="primary" ghost @click="testAllNodes" :loading="checkingAll">检查当前分组</n-button>
         </n-space>
       </template>
     </n-page-header>

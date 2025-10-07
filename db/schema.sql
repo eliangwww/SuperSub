@@ -37,6 +37,18 @@ CREATE TABLE IF NOT EXISTS nodes (
   FOREIGN KEY (group_id) REFERENCES node_groups (id) ON DELETE SET NULL
 );
 
+-- Create node_statuses table
+CREATE TABLE IF NOT EXISTS node_statuses (
+    node_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    latency INTEGER,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (node_id, user_id),
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- Create subscriptions table
 CREATE TABLE IF NOT EXISTS subscriptions (
   id TEXT PRIMARY KEY,

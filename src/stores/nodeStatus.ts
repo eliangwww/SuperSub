@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useAuthStore } from './auth'
 import { HealthStatus } from '@/types'
-import { useMessage } from 'naive-ui'
+import { api } from '@/utils/api'
 
 export const useNodeStatusStore = defineStore('nodeStatus', () => {
   const statuses = ref<Record<string, HealthStatus>>({})
@@ -19,10 +19,8 @@ export const useNodeStatusStore = defineStore('nodeStatus', () => {
 
     loading.value = true
     try {
-      const response = await fetch('/api/node-statuses', {
-        headers: { 'Authorization': `Bearer ${authStore.token}` }
-      })
-      const result: { success: boolean, data?: HealthStatus[], message?: string } = await response.json()
+      const response = await api.get('/node-statuses');
+      const result = response.data;
       if (result.success && result.data) {
         const newStatuses: Record<string, HealthStatus> = {}
         for (const status of result.data) {
@@ -46,20 +44,14 @@ export const useNodeStatusStore = defineStore('nodeStatus', () => {
     }
 
     try {
-      const response = await fetch('/api/nodes/health-check', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authStore.token}`
-        },
-        body: JSON.stringify({ nodeIds })
-      })
-      const result: { success: boolean, message?: string } = await response.json()
-      if (response.ok && result.success) {
-        // After initiating the check, wait a bit and then refresh the statuses
-        setTimeout(() => {
-          fetchStatuses()
-        }, 3000) // Wait 3 seconds before the first refresh
+      const response = await api.post('/nodes/health-check', { nodeIds });
+      const result = response.data;
+      if (response.status === 200 && result.success) {
+        // Immediately fetch statuses to show 'testing' state
+        fetchStatuses();
+        // Fetch again after a few seconds to get final results
+        setTimeout(() => fetchStatuses(), 3000);
+        setTimeout(() => fetchStatuses(), 8000); // And again to catch slower nodes
         return { success: true, message: result.message || '节点健康检查已启动' }
       } else {
         return { success: false, message: result.message || '启动健康检查失败' }

@@ -54,10 +54,30 @@ api.get('/stats', manualAuthMiddleware, async (c) => {
 
 api.get('/node-statuses', manualAuthMiddleware, async (c) => {
     const user = c.get('jwtPayload');
-    const { results } = await c.env.DB.prepare('SELECT id as node_id, status, latency, last_checked, error FROM nodes WHERE user_id = ?').bind(user.id).all();
-    const validStatuses = ['pending', 'testing', 'healthy', 'unhealthy'];
-    const sanitizedResults = (results as any[]).map(r => ({ ...r, status: validStatuses.includes(r.status) ? r.status : 'pending' }));
-    return c.json({ success: true, data: sanitizedResults });
+    try {
+        const { results } = await c.env.DB.prepare(
+            'SELECT * FROM node_statuses WHERE user_id = ?'
+        ).bind(user.id).all<any>();
+
+        const now = Date.now();
+        const TESTING_TIMEOUT = 2 * 60 * 1000; // 2 minutes
+
+        const sanitizedResults = results.map(r => {
+            if (r.status === 'testing') {
+                const checkedAt = new Date(r.checked_at).getTime();
+                if (now - checkedAt > TESTING_TIMEOUT) {
+                    // If status is 'testing' for too long, consider it failed/pending.
+                    return { ...r, status: 'pending', latency: null };
+                }
+            }
+            return r;
+        });
+
+        return c.json({ success: true, data: sanitizedResults });
+    } catch (error: any) {
+        console.error('Failed to get node statuses:', error);
+        return c.json({ success: false, message: `Database error: ${error.message}` }, 500);
+    }
 });
 
 api.get('/settings', manualAuthMiddleware, async (c) => {
