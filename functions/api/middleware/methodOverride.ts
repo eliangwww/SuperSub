@@ -8,7 +8,7 @@ export const methodOverrideMiddleware = (app: Hono<{ Bindings: Env }>) => {
     const overrideMethod = c.req.header('X-HTTP-Method-Override');
     if (c.req.method === 'POST' && overrideMethod) {
       const newMethod = overrideMethod.toUpperCase();
-      if (['PUT', 'DELETE'].includes(newMethod)) {
+      if (['PUT', 'DELETE', 'PATCH'].includes(newMethod)) {
         // Reconstruct the request with the overridden method.
         const newReq = new Request(c.req.raw, {
           method: newMethod,
@@ -18,6 +18,6 @@ export const methodOverrideMiddleware = (app: Hono<{ Bindings: Env }>) => {
       }
     }
     // If no override, continue with the normal flow.
-    await next();
+    return await next();
   };
 };

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { fetchWithTimeout } from '../utils/network';
 import type { Env } from '../utils/types';
 import { manualAuthMiddleware } from '../middleware/auth';
 import { parseNodeLinks, ParsedNode } from '../../../src/utils/nodeParser';
@@ -101,6 +102,109 @@ nodes.post('/batch-import', manualAuthMiddleware, async (c) => {
     }
 
     return c.json({ success: true, message: `Successfully imported ${stmts.length} nodes.` });
+});
+
+nodes.post('/health-check', manualAuthMiddleware, async (c) => {
+    const user = c.get('jwtPayload');
+    const { nodeIds } = await c.req.json<{ nodeIds: string[] }>();
+
+    if (!nodeIds || nodeIds.length === 0) {
+        return c.json({ success: false, message: 'No nodes selected for health check' }, 400);
+    }
+
+    const runHealthChecks = async () => {
+        const testNodeAndSave = async (node: { id: string; server: string; port: number }) => {
+            const healthCheckUrl = 'https://www.google.com/generate_204';
+            const timeout = 5000;
+            let status: 'healthy' | 'unhealthy' = 'unhealthy';
+            let latency: number | null = null;
+
+            if (node.server && node.port) {
+                const startTime = Date.now();
+                try {
+                    const resp = await fetchWithTimeout(healthCheckUrl, {
+                        method: 'HEAD',
+                        // @ts-ignore-next-line
+                        connect: { hostname: node.server, port: node.port },
+                    }, timeout);
+                    latency = Date.now() - startTime;
+                    if (resp.status >= 200 && resp.status < 400) {
+                        status = 'healthy';
+                    }
+                    // New requirement: if latency > 5000ms, it's also unhealthy.
+                    if (latency > 5000) {
+                        status = 'unhealthy';
+                    }
+                } catch (e) { /* Error implies unhealthy */ }
+            }
+            
+            const now = new Date().toISOString();
+            await c.env.DB.prepare(
+                `INSERT INTO node_statuses (node_id, user_id, status, latency, checked_at)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT(node_id, user_id) DO UPDATE SET
+                 status = excluded.status,
+                 latency = excluded.latency,
+                 checked_at = excluded.checked_at`
+            ).bind(node.id, user.id, status, latency, now).run();
+        };
+
+        const BATCH_SIZE = 30; // Process 30 nodes at a time
+        const DELAY_BETWEEN_BATCHES = 2000; // 2 seconds
+        const CONCURRENCY_LIMIT = 10; // Test 10 nodes concurrently within a batch
+
+        const executeInParallel = async (tasks: (() => Promise<any>)[]) => {
+            const executing = new Set<Promise<any>>();
+            for (const task of tasks) {
+                const promise = task().finally(() => executing.delete(promise));
+                executing.add(promise);
+                if (executing.size >= CONCURRENCY_LIMIT) {
+                    await Promise.race(executing);
+                }
+            }
+            await Promise.all(executing);
+        };
+
+        // Process nodes in batches of 30
+        for (let i = 0; i < nodeIds.length; i += BATCH_SIZE) {
+            const batchNodeIds = nodeIds.slice(i, i + BATCH_SIZE);
+
+            // 1. Set current batch to 'testing'
+            const now = new Date().toISOString();
+            const updateStmts = batchNodeIds.map(id => c.env.DB.prepare(
+                `INSERT INTO node_statuses (node_id, user_id, status, latency, checked_at)
+                 VALUES (?, ?, 'testing', NULL, ?)
+                 ON CONFLICT(node_id, user_id) DO UPDATE SET status = 'testing', latency = NULL, checked_at = ?`
+            ).bind(id, user.id, now, now));
+            
+            for (const stmt of updateStmts) {
+                await stmt.run();
+            }
+
+            // 2. Fetch node info for the current batch
+            const placeholders = batchNodeIds.map(() => '?').join(',');
+            const nodesInBatch = await c.env.DB.prepare(
+                `SELECT id, server, port FROM nodes WHERE id IN (${placeholders}) AND user_id = ?`
+            ).bind(...batchNodeIds, user.id).all<{ id: string; server: string; port: number }>();
+
+            if (!nodesInBatch.results || nodesInBatch.results.length === 0) {
+                continue; // Skip if no valid nodes found in this batch
+            }
+
+            // 3. Execute tests for the current batch with concurrency control
+            const testTasks = nodesInBatch.results.map(node => () => testNodeAndSave(node));
+            await executeInParallel(testTasks);
+
+            // 4. Wait for 2 seconds before starting the next batch (if it's not the last one)
+            if (i + BATCH_SIZE < nodeIds.length) {
+                await new Promise(res => setTimeout(res, DELAY_BETWEEN_BATCHES));
+            }
+        }
+    };
+
+    c.executionCtx.waitUntil(runHealthChecks());
+
+    return c.json({ success: true, message: `Health check started for ${nodeIds.length} nodes.` });
 });
 
 nodes.post('/batch-update-group', manualAuthMiddleware, async (c) => {
