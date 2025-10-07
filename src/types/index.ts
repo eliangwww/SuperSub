@@ -23,6 +23,8 @@ export interface Subscription {
   updated_at: string;
   last_updated?: string;
   error?: string | null;
+  expires_at?: string | null;
+  subscription_info?: string | null;
 }
 
 export interface Node {

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, h, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup } from 'naive-ui'
+import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon } from 'naive-ui'
+import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline } from '@vicons/ionicons5'
 import type { DataTableColumns, FormInst } from 'naive-ui'
 import { Subscription, Node, ApiResponse, SubconverterAsset } from '@/types'
 import { api } from '@/utils/api'
@@ -25,6 +26,9 @@ const updatingAll = ref(false)
 const showImportModal = ref(false)
 const importUrls = ref('')
 const importLoading = ref(false)
+
+// For batch actions
+const checkedRowKeys = ref<string[]>([])
 
 // For subscription preview
 const showPreviewModal = ref(false)
@@ -101,6 +105,27 @@ const formState = reactive({
 
 const modalTitle = computed(() => (editingSubscription.value ? '编辑订阅' : '新增订阅'))
 
+const formatBytes = (bytes: number, decimals = 2) => {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+const parseSubscriptionInfo = (info: string) => {
+    const data: Record<string, number> = {};
+    info.split(';').forEach(part => {
+        const [key, value] = part.split('=').map(s => s.trim());
+        if (key && value) {
+            data[key] = parseInt(value, 10);
+        }
+    });
+    return data;
+};
+
+
 const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRules }: {
     onEdit: (row: Subscription) => void,
     onUpdate: (row: Subscription) => void,
@@ -109,11 +134,13 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
     onManageRules: (row: Subscription) => void,
 }): DataTableColumns<Subscription> => {
   return [
+    { type: 'selection' },
     { title: '名称', key: 'name', sorter: 'default', width: 150 },
     {
       title: '订阅链接',
       key: 'url',
       ellipsis: { tooltip: true },
+      width: 150,
     },
     {
       title: '状态',
@@ -145,8 +172,71 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
       }
     },
     {
+      title: '剩余流量',
+      key: 'subscription_info',
+      width: 120,
+      render(row) {
+        if (!row.subscription_info) return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
+
+        const info = parseSubscriptionInfo(row.subscription_info);
+        const remaining = info.total - (info.upload + info.download);
+        
+        if (isNaN(remaining) || info.total === 0) {
+            return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
+        }
+
+        const usagePercentage = (info.upload + info.download) / info.total;
+        let tagType: 'success' | 'warning' | 'error' = 'success';
+        if (usagePercentage > 0.9) {
+            tagType = 'error';
+        } else if (usagePercentage > 0.7) {
+            tagType = 'warning';
+        }
+
+        const tooltipContent = `总流量: ${formatBytes(info.total)}\n已用(U/D): ${formatBytes(info.upload)} / ${formatBytes(info.download)}`;
+
+        return h(NTooltip, null, {
+          trigger: () => h(NTag, { type: tagType, size: 'small', round: true }, { default: () => formatBytes(remaining) }),
+          default: () => h('pre', { style: 'white-space: pre-wrap;' }, tooltipContent),
+        });
+      }
+    },
+    {
+      title: '剩余天数',
+      key: 'expires_at',
+      width: 120,
+      sorter: (a, b) => new Date(a.expires_at || 0).getTime() - new Date(b.expires_at || 0).getTime(),
+      render(row) {
+        if (!row.expires_at) return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
+
+        const now = new Date();
+        const expiry = new Date(row.expires_at);
+        const diffTime = expiry.getTime() - now.getTime();
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        if (diffDays < 0) {
+            return h(NTag, { type: 'error', size: 'small', round: true }, { default: () => '已过期' });
+        }
+
+        let tagType: 'success' | 'warning' | 'error' = 'success';
+        if (diffDays <= 3) {
+            tagType = 'error';
+        } else if (diffDays <= 7) {
+            tagType = 'warning';
+        }
+        
+        const tooltipContent = `到期时间: ${format(expiry, 'yyyy-MM-dd HH:mm')}`;
+
+        return h(NTooltip, null, {
+          trigger: () => h(NTag, { type: tagType, size: 'small', round: true }, { default: () => `${diffDays} 天` }),
+          default: () => tooltipContent,
+        });
+      }
+    },
+    {
       title: '上次更新',
       key: 'last_updated',
+      width: 180,
       sorter: (a, b) => new Date(a.last_updated || 0).getTime() - new Date(b.last_updated || 0).getTime(),
       render(row) {
         return row.last_updated ? format(new Date(row.last_updated), 'yyyy-MM-dd HH:mm:ss') : 'N/A'
@@ -155,20 +245,23 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
     {
       title: '操作',
       key: 'actions',
+      fixed: 'right',
+      width: 200,
       render(row) {
+        const createTooltipButton = (tooltip: string, icon: any, onClick: () => void, props: any = {}) => {
+          return h(NTooltip, null, {
+            trigger: () => h(NButton, { circle: true, tertiary: true, size: 'small', onClick, ...props }, { icon: () => h(NIcon, { component: icon }) }),
+            default: () => tooltip,
+          });
+        };
+
         return h(NSpace, null, {
           default: () => [
-            h(NButton, { size: 'small', onClick: () => onPreviewNodes(row) }, { default: () => '预览节点' }),
-            h(NButton, { size: 'small', type: 'info', ghost: true, onClick: () => onManageRules(row) }, { default: () => '规则' }),
-            h(NButton, { size: 'small', onClick: () => onEdit(row) }, { default: () => '编辑' }),
-            h(NButton, {
-                size: 'small',
-                type: 'primary',
-                ghost: true,
-                loading: updatingId.value === row.id,
-                onClick: () => onUpdate(row)
-            }, { default: () => '更新' }),
-            h(NButton, { size: 'small', type: 'error', ghost: true, onClick: () => onDelete(row) }, { default: () => '删除' }),
+            createTooltipButton('预览节点', EyeOutline, () => onPreviewNodes(row)),
+            createTooltipButton('规则', FilterOutline, () => onManageRules(row), { type: 'info' }),
+            createTooltipButton('编辑', CreateOutline, () => onEdit(row)),
+            createTooltipButton('更新', SyncOutline, () => onUpdate(row), { type: 'primary', loading: updatingId.value === row.id }),
+            createTooltipButton('删除', TrashOutline, () => onDelete(row), { type: 'error' }),
           ]
         })
       }
@@ -421,6 +514,33 @@ const handleBulkImport = async () => {
   }
 }
 
+const handleBatchDelete = () => {
+  if (checkedRowKeys.value.length === 0) {
+    message.warning('请至少选择一个订阅');
+    return;
+  }
+  dialog.warning({
+    title: '确认批量删除',
+    content: `确定要删除选中的 ${checkedRowKeys.value.length} 个订阅吗？`,
+    positiveText: '确定',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const response = await api.post('/subscriptions/batch-delete', { ids: checkedRowKeys.value });
+        if (response.data.success) {
+          message.success('批量删除成功');
+          fetchSubscriptions();
+          checkedRowKeys.value = [];
+        } else {
+          message.error(response.data.message || '批量删除失败');
+        }
+      } catch (err) {
+        message.error('请求失败，请稍后重试');
+      }
+    }
+  });
+};
+
 // --- Subscription Rules Logic ---
 
 const fetchRules = async (subscriptionId: string) => {
@@ -650,6 +770,7 @@ onMounted(fetchSubscriptions)
           <n-button type="primary" ghost @click="handleUpdateAll" :loading="updatingAll">更新全部</n-button>
           <n-button type="primary" @click="openModal(null)">新增订阅</n-button>
           <n-button type="info" @click="openImportModal">批量导入</n-button>
+          <n-button type="error" ghost @click="handleBatchDelete" :disabled="checkedRowKeys.length === 0">批量删除</n-button>
           <n-button type="warning" ghost @click="openPreviewModal">链接预览</n-button>
         </n-space>
       </template>
@@ -662,6 +783,9 @@ onMounted(fetchSubscriptions)
       :pagination="{ pageSize: 10 }"
       :bordered="false"
       class="mt-4"
+      v-model:checked-row-keys="checkedRowKeys"
+      :row-key="(row: Subscription) => row.id"
+      :scroll-x="1800"
     />
 
     <n-modal

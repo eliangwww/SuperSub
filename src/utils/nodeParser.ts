@@ -47,21 +47,48 @@ const base64Decode = (str: string): string => {
 const parseVmess = (link: string): ParsedNode | null => {
     if (!link.startsWith('vmess://')) return null;
 
-    const data = link.substring(8);
+    const encodedPart = link.substring(8);
+    let decodedData: string;
 
-    // Strategy 1: Check for URL-like format (contains '@')
-    if (data.includes('@')) {
+    try {
+        decodedData = base64Decode(encodedPart);
+    } catch (e) {
+        console.error('Initial Base64 decoding failed for VMess link:', link, e);
+        return null;
+    }
+
+    // Strategy 1: Try to parse decoded data as JSON (legacy format)
+    try {
+        const config = JSON.parse(decodedData);
+        if (config.add && config.port && config.id) {
+            const protocol_params = { ...config };
+            delete protocol_params.ps; // 'ps' is the remarks/name
+
+            return {
+                name: config.ps || `${config.add}:${config.port}`,
+                link: link,
+                protocol: 'vmess',
+                protocol_params: protocol_params,
+                server: config.add,
+                port: Number(config.port),
+                type: 'vmess',
+                password: config.id, // UUID
+                params: protocol_params,
+            };
+        }
+    } catch (e) {
+        // Not a JSON, so we proceed to the next strategy.
+    }
+
+    // Strategy 2: Treat decoded data as a URL-like string (e.g., "auto:uuid@host:port?params...")
+    if (decodedData.includes('@')) {
         try {
-            const atIndex = data.lastIndexOf('@');
-            const credentials = data.substring(0, atIndex);
-            const serverPart = data.substring(atIndex + 1);
-
-            // Reconstruct a parsable URL. The protocol doesn't matter as much as the structure.
-            const parsableLink = `vmess://${serverPart}`;
+            // Reconstruct a parsable URL from the decoded data.
+            const parsableLink = `vmess://${decodedData}`;
             const url = new URL(parsableLink);
 
-            const [method, uuid] = credentials.split(':');
-            if (!uuid) throw new Error('Invalid VMess credentials format.');
+            const [method, uuid] = url.username.split(':');
+            if (!uuid) throw new Error('Invalid VMess credentials format in decoded data.');
 
             const name = decodeURIComponent(url.hash.substring(1)) || url.hostname;
             const server = url.hostname;
@@ -99,41 +126,12 @@ const parseVmess = (link: string): ParsedNode | null => {
                 params: protocol_params,
             };
         } catch (error) {
-            console.error('Failed to parse VMess URL-like format:', link, error);
-            return null; // If it has '@' but fails parsing, it's likely invalid.
+            console.error('Failed to parse decoded VMess data as URL:', decodedData, error);
+            return null;
         }
     }
-    
-    // Strategy 2: Treat as Base64-encoded JSON (legacy format)
-    try {
-        const decodedJson = base64Decode(data);
-        if (!decodedJson) return null; // Stop if decoding fails
 
-        const config = JSON.parse(decodedJson);
-
-        if (config.add && config.port && config.id) {
-            const protocol_params = { ...config };
-            delete protocol_params.ps; // 'ps' is the remarks/name
-
-            return {
-                name: config.ps || `${config.add}:${config.port}`,
-                link: link,
-                protocol: 'vmess',
-                protocol_params: protocol_params,
-                server: config.add,
-                port: Number(config.port),
-                type: 'vmess',
-                password: config.id, // UUID
-                params: protocol_params,
-            };
-        }
-    } catch (error) {
-        console.error('Failed to parse VMess Base64 format:', link, error);
-        return null;
-    }
-
-    // If neither strategy works, return null.
-    console.error('Failed to parse VMess link with any strategy:', link);
+    console.error('Failed to parse VMess link. Decoded data was not valid JSON or a recognizable URL format:', decodedData);
     return null;
 };
 
