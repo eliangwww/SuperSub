@@ -12,6 +12,7 @@ import profileRoutes from './routes/profiles';
 import adminRoutes from './routes/admin';
 import assetRoutes from './routes/assets';
 import groupRoutes from './routes/groups';
+import subscriptionGroupRoutes from './routes/subscriptionGroups';
 import systemRoutes from './routes/system';
 import userRoutes from './routes/user';
 import publicRoutes from './routes/public';
@@ -37,6 +38,7 @@ api.route('/profiles', profileRoutes);
 api.route('/admin', adminRoutes);
 api.route('/assets', assetRoutes);
 api.route('/groups', groupRoutes);
+api.route('/subscription-groups', subscriptionGroupRoutes);
 api.route('/user', userRoutes);
 
 // Other remaining routes from the original file

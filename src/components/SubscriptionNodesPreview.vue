@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, h, watch, computed } from 'vue';
-import { useMessage, NDataTable, NSpin, NTag, NEmpty, NButton, NSpace, NSwitch, NTooltip } from 'naive-ui';
+import { useMessage, NDataTable, NSpin, NTag, NEmpty, NButton, NSpace, NSwitch, NTooltip, NSelect } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { Node, ApiResponse } from '@/types';
+import { useGroupStore as useNodeGroupStore } from '@/stores/groups';
 import { regenerateLink, type ParsedNode } from '@/utils/nodeParser';
 import { api } from '@/utils/api';
 import { getNaiveTagColor } from '@/utils/colors';
@@ -23,10 +24,12 @@ const props = defineProps({
 });
 
 const message = useMessage();
+const nodeGroupStore = useNodeGroupStore();
 const nodes = ref<Partial<Node>[]>([]);
 const loading = ref(false);
 const importLoading = ref(false);
 const applyRules = ref(false);
+const selectedGroupId = ref<string | undefined>(undefined);
 
 const columns: DataTableColumns<Partial<Node>> = [
     { title: '名称', key: 'name', ellipsis: { tooltip: true }, fixed: 'left', width: 200 },
@@ -108,7 +111,10 @@ const handleImport = async () => {
     importLoading.value = true;
     try {
         // Send the array of parsed node objects directly
-        const response = await api.post<ApiResponse>('/nodes/batch-import', { nodes: nodes.value });
+        const response = await api.post<ApiResponse>('/nodes/batch-import', {
+          nodes: nodes.value,
+          groupId: selectedGroupId.value,
+        });
         if (response.data.success) {
             message.success(response.data.message || '节点导入成功');
         } else {
@@ -136,6 +142,10 @@ watch(() => props.show, (newVal, oldVal) => {
         fetchPreview();
     }
 });
+
+onMounted(() => {
+  nodeGroupStore.fetchGroups();
+});
 </script>
 
 <template>
@@ -151,14 +161,23 @@ watch(() => props.show, (newVal, oldVal) => {
           启用后，将加载并应用您在此订阅上配置的所有规则（如过滤、重命名等）。
         </n-tooltip>
       </n-space>
-      <n-button
-        type="primary"
-        @click="handleImport"
-        :loading="importLoading"
-        :disabled="loading || nodes.length === 0"
-      >
-        导入 {{ nodes.length }} 个节点
-      </n-button>
+      <n-space>
+        <n-select
+          v-model:value="selectedGroupId"
+          placeholder="导入到分组 (可选)"
+          :options="nodeGroupStore.groups.map(g => ({ label: g.name, value: g.id }))"
+          clearable
+          style="width: 200px;"
+        />
+        <n-button
+          type="primary"
+          @click="handleImport"
+          :loading="importLoading"
+          :disabled="loading || nodes.length === 0"
+        >
+          导入 {{ nodes.length }} 个节点
+        </n-button>
+      </n-space>
     </n-space>
     <n-spin :show="loading">
       <n-data-table

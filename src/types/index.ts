@@ -16,6 +16,7 @@ export interface User {
 export interface Subscription {
   id: string;
   user_id: string;
+  group_id: string | null;
   name: string;
   url: string;
   node_count?: number;
