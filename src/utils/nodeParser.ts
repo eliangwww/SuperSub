@@ -47,86 +47,104 @@ const base64Decode = (str: string): string => {
 const parseVmess = (link: string): ParsedNode | null => {
     if (!link.startsWith('vmess://')) return null;
 
-    const encodedPart = link.substring(8);
-    let decodedData: string;
+    let data = link.substring(8);
+    let encodedPart = data;
+    let queryPart = '';
 
+    const queryIndex = data.indexOf('?');
+    if (queryIndex !== -1) {
+        encodedPart = data.substring(0, queryIndex);
+        queryPart = data.substring(queryIndex);
+    }
+
+    let decodedData: string;
     try {
         decodedData = base64Decode(encodedPart);
     } catch (e) {
-        console.error('Initial Base64 decoding failed for VMess link:', link, e);
+        console.error('Base64 decoding failed for VMess link part:', encodedPart, e);
         return null;
     }
 
-    // Strategy 1: Try to parse decoded data as JSON (legacy format)
+    const queryParams = new URLSearchParams(queryPart);
+    let finalParams: Record<string, any> = {};
+    for (const [key, value] of queryParams.entries()) {
+        finalParams[key] = value;
+    }
+
+    // Strategy 1: Try to parse decoded data as JSON
     try {
         const config = JSON.parse(decodedData);
         if (config.add && config.port && config.id) {
-            const protocol_params = { ...config };
-            delete protocol_params.ps; // 'ps' is the remarks/name
-
-            return {
-                name: config.ps || `${config.add}:${config.port}`,
-                link: link,
-                protocol: 'vmess',
-                protocol_params: protocol_params,
-                server: config.add,
-                port: Number(config.port),
-                type: 'vmess',
-                password: config.id, // UUID
-                params: protocol_params,
-            };
-        }
-    } catch (e) {
-        // Not a JSON, so we proceed to the next strategy.
-    }
-
-    // Strategy 2: Treat decoded data as a URL-like string (e.g., "auto:uuid@host:port?params...")
-    if (decodedData.includes('@')) {
-        try {
-            // Reconstruct a parsable URL from the decoded data.
-            const parsableLink = `vmess://${decodedData}`;
-            const url = new URL(parsableLink);
-
-            const [method, uuid] = url.username.split(':');
-            if (!uuid) throw new Error('Invalid VMess credentials format in decoded data.');
-
-            const name = decodeURIComponent(url.hash.substring(1)) || url.hostname;
-            const server = url.hostname;
-            const port = Number(url.port);
-
-            if (!server || !port) return null;
-
-            const protocol_params: Record<string, any> = {
-                id: uuid,
-                security: method,
-            };
-            for (const [key, value] of url.searchParams.entries()) {
-                protocol_params[key] = value;
-            }
+            // Merge JSON config with URL query params, with query params taking precedence
+            finalParams = { ...config, ...finalParams };
             
-            // Standardize common parameters
-            protocol_params.add = server;
-            protocol_params.port = port;
-            protocol_params.aid = protocol_params.alterId || '0';
-            protocol_params.net = protocol_params.obfs || 'tcp';
-            protocol_params.type = 'none';
-            protocol_params.host = protocol_params.obfsParam || '';
-            protocol_params.path = protocol_params.path || '';
-            protocol_params.tls = protocol_params.tls === '1' || protocol_params.tls === 'tls' ? 'tls' : '';
+            const name = finalParams.ps || finalParams.remarks || `${finalParams.add}:${finalParams.port}`;
+            delete finalParams.ps;
+            delete finalParams.remarks;
 
             return {
                 name,
                 link,
                 protocol: 'vmess',
-                protocol_params,
-                server,
-                port,
+                protocol_params: finalParams,
+                server: finalParams.add,
+                port: Number(finalParams.port),
                 type: 'vmess',
-                password: uuid,
-                params: protocol_params,
+                password: finalParams.id,
+                params: finalParams,
+            };
+        }
+    } catch (e) {
+        // Not a JSON, proceed to next strategy
+    }
+
+    // Strategy 2: Treat decoded data as a URL-like string (e.g., "auto:uuid@host:port")
+    if (decodedData.includes('@')) {
+        try {
+            const atIndex = decodedData.lastIndexOf('@');
+            const credentials = decodedData.substring(0, atIndex);
+            const addressPart = decodedData.substring(atIndex + 1);
+
+            const [method, uuid] = credentials.split(':');
+            if (!uuid) throw new Error('Invalid VMess credentials in decoded data.');
+
+            const portIndex = addressPart.lastIndexOf(':');
+            if (portIndex === -1) throw new Error('Port not found in decoded data.');
+            
+            const server = addressPart.substring(0, portIndex);
+            const port = Number(addressPart.substring(portIndex + 1));
+
+            if (!server || !port) return null;
+
+            // Base parameters from the decoded part
+            let baseParams: Record<string, any> = {
+                id: uuid,
+                security: method,
+                add: server,
+                port: port,
+            };
+
+            // Merge with URL query params, query params take precedence
+            finalParams = { ...baseParams, ...finalParams };
+
+            const name = finalParams.remarks || finalParams.ps || server;
+            // Clean up remarks/ps from final params if they exist
+            delete finalParams.remarks;
+            delete finalParams.ps;
+
+            return {
+                name,
+                link,
+                protocol: 'vmess',
+                protocol_params: finalParams,
+                server: finalParams.add,
+                port: Number(finalParams.port),
+                type: 'vmess',
+                password: finalParams.id,
+                params: finalParams,
             };
         } catch (error) {
-            console.error('Failed to parse decoded VMess data as URL:', decodedData, error);
+            console.error('Failed to manually parse decoded VMess URL-like data:', decodedData, error);
             return null;
         }
     }
