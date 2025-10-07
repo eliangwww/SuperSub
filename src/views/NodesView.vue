@@ -82,6 +82,21 @@ const filteredNodes = computed(() => {
   });
 });
 
+const groupCounts = computed(() => {
+  const counts: { all: number; ungrouped: number; [key: string]: number } = {
+    all: nodes.value.length,
+    ungrouped: 0,
+  };
+  nodes.value.forEach(node => {
+    if (node.group_id) {
+      counts[node.group_id] = (counts[node.group_id] || 0) + 1;
+    } else {
+      counts.ungrouped++;
+    }
+  });
+  return counts;
+});
+
 const createColumns = ({ onTest, onEdit, onDelete }: {
     onTest: (row: Node) => void,
     onEdit: (row: Node) => void,
@@ -589,21 +604,22 @@ onBeforeUnmount(() => {
     />
 
     <n-tabs type="card" class="mt-4" v-model:value="activeTab">
-      <n-tab-pane name="all" tab="全部" />
-      <n-tab-pane name="ungrouped" tab="未分组" />
+      <n-tab-pane name="all" :tab="`全部 (${groupCounts.all})`" />
+      <n-tab-pane name="ungrouped" :tab="`未分组 (${groupCounts.ungrouped})`" />
       <n-tab-pane
         v-for="group in groupStore.groups"
         :key="group.id"
         :name="group.id"
-        :tab="group.name"
       >
         <template #tab>
-          <div 
+          <div
             class="group-tab-wrapper"
             @click.prevent="handleTabClick(group, $event)"
             @contextmenu.prevent="handleContextMenu(group, $event)"
           >
-            <span :style="{ color: group.is_enabled ? '' : '#999', marginRight: '8px' }">{{ group.name }}</span>
+            <span :style="{ color: group.is_enabled ? '' : '#999', marginRight: '8px' }">
+              {{ group.name }} ({{ groupCounts[group.id] || 0 }})
+            </span>
             <n-button text class="group-actions-button">
               <n-icon :component="MoreIcon" />
             </n-button>

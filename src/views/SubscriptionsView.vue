@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, h, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane } from 'naive-ui'
-import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline } from '@vicons/ionicons5'
-import type { DataTableColumns, FormInst } from 'naive-ui'
+import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane, NDropdown } from 'naive-ui'
+import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline, EllipsisVertical as MoreIcon } from '@vicons/ionicons5'
+import type { DataTableColumns, FormInst, DropdownOption } from 'naive-ui'
 import { Subscription, Node, ApiResponse } from '@/types'
 import { api } from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
@@ -45,6 +45,16 @@ const moveToGroupLoading = ref(false)
 const showAddGroupModal = ref(false)
 const newGroupName = ref('')
 const addGroupLoading = ref(false)
+
+// For Group Management
+const showEditGroupModal = ref(false)
+const editingGroup = ref<import('@/stores/subscriptionGroups').SubscriptionGroup | null>(null)
+const editingGroupName = ref('')
+const editGroupLoading = ref(false)
+const showDropdown = ref(false)
+const dropdownX = ref(0)
+const dropdownY = ref(0)
+const activeDropdownGroup = ref<import('@/stores/subscriptionGroups').SubscriptionGroup | null>(null)
 
 
 // For Node Preview in Modal
@@ -113,6 +123,21 @@ const filteredSubscriptions = computed(() => {
     if (activeTab.value === 'ungrouped') return !sub.group_id
     return sub.group_id === activeTab.value
   })
+})
+
+const groupCounts = computed(() => {
+  const counts: { all: number; ungrouped: number; [key: string]: number } = {
+    all: subscriptions.value.length,
+    ungrouped: 0,
+  }
+  subscriptions.value.forEach(sub => {
+    if (sub.group_id) {
+      counts[sub.group_id] = (counts[sub.group_id] || 0) + 1
+    } else {
+      counts.ungrouped++
+    }
+  })
+  return counts
 })
 
 const formatBytes = (bytes: number, decimals = 2) => {
@@ -550,6 +575,140 @@ const handleSaveGroup = async () => {
   }
 };
 
+const handleUpdateGroup = async () => {
+  if (!editingGroup.value || !editingGroupName.value.trim()) {
+    message.warning('分组名称不能为空')
+    return
+  }
+  editGroupLoading.value = true
+  try {
+    const response = await subscriptionGroupStore.updateGroup(editingGroup.value.id, editingGroupName.value)
+    if (response.success) {
+      message.success('分组更新成功')
+      showEditGroupModal.value = false
+    } else {
+      message.error(response.message || '更新失败')
+    }
+  } catch (error: any) {
+    message.error(error.message || '更新失败')
+  } finally {
+    editGroupLoading.value = false
+  }
+}
+
+const getDropdownOptions = (group: import('@/stores/subscriptionGroups').SubscriptionGroup): DropdownOption[] => {
+  return [
+    { label: '更新本组', key: 'update-group' },
+    { label: '重命名', key: 'rename' },
+    { label: group.is_enabled ? '禁用' : '启用', key: 'toggle' },
+    { type: 'divider', key: 'd1' },
+    { label: '删除', key: 'delete', props: { style: 'color: red;' } }
+  ]
+}
+
+const handleGroupAction = (key: string) => {
+  showDropdown.value = false
+  const group = activeDropdownGroup.value
+  if (!group) return
+
+  switch (key) {
+    case 'update-group':
+      handleUpdateGroupSubscriptions(group.id)
+      break
+    case 'rename':
+      editingGroup.value = group
+      editingGroupName.value = group.name
+      showEditGroupModal.value = true
+      break
+    case 'toggle':
+      subscriptionGroupStore.toggleGroup(group.id).catch((err: any) => message.error(err.message || '操作失败'))
+      break
+    case 'delete':
+      dialog.warning({
+        title: '确认删除',
+        content: `确定要删除分组 "${group.name}" 吗？分组下的订阅将变为“未分组”。`,
+        positiveText: '确定',
+        negativeText: '取消',
+        onPositiveClick: async () => {
+          try {
+            const response = await subscriptionGroupStore.deleteGroup(group.id)
+            if (response.success) {
+              message.success('分组删除成功')
+              if (activeTab.value === group.id) {
+                activeTab.value = 'all'
+              }
+              fetchSubscriptions() // Refresh subscriptions to update their group status
+            } else {
+              message.error(response.message || '删除失败')
+            }
+          } catch (error: any) {
+            message.error(error.message || '删除失败')
+          }
+        }
+      })
+      break
+  }
+}
+
+const handleTabClick = (group: import('@/stores/subscriptionGroups').SubscriptionGroup, event: MouseEvent) => {
+  const target = event.target as HTMLElement
+  if (target.closest('.group-actions-button')) {
+    showDropdown.value = true
+    dropdownX.value = event.clientX
+    dropdownY.value = event.clientY
+    activeDropdownGroup.value = group
+  } else {
+    activeTab.value = group.id
+  }
+}
+
+const handleContextMenu = (group: import('@/stores/subscriptionGroups').SubscriptionGroup, event: MouseEvent) => {
+  event.preventDefault()
+  showDropdown.value = false
+  setTimeout(() => {
+    showDropdown.value = true
+    dropdownX.value = event.clientX
+    dropdownY.value = event.clientY
+    activeDropdownGroup.value = group
+  }, 50)
+}
+
+const handleUpdateGroupSubscriptions = async (groupId: string) => {
+  const subsToUpdate = subscriptions.value.filter(s => s.group_id === groupId && s.enabled)
+  if (subsToUpdate.length === 0) {
+    message.info('该分组下没有已启用的订阅需要更新')
+    return
+  }
+
+  const groupName = subscriptionGroupStore.groups.find(g => g.id === groupId)?.name || '该分组'
+  message.info(`开始更新【${groupName}】中的 ${subsToUpdate.length} 个已启用的订阅...`)
+
+  const CONCURRENT_LIMIT = 5
+  const tasks = subsToUpdate.map(sub => () => handleUpdate(sub, true))
+
+  const executeInPool = async (poolLimit: number, tasks: (() => Promise<any>)[]) => {
+      const results: any[] = []
+      const executing = new Set<Promise<any>>()
+      for (const task of tasks) {
+          const p = Promise.resolve().then(() => task())
+          results.push(p)
+          executing.add(p)
+          const clean = () => executing.delete(p)
+          p.then(clean).catch(clean)
+          if (executing.size >= poolLimit) {
+              await Promise.race(executing)
+          }
+      }
+      return Promise.all(results)
+  }
+
+  await executeInPool(CONCURRENT_LIMIT, tasks)
+
+  message.success(`【${groupName}】中的订阅更新完成！`)
+  fetchSubscriptions()
+}
+
+
 // --- Subscription Rules Logic ---
 const fetchRules = async (subscriptionId: string) => {
   rulesLoading.value = true
@@ -772,16 +931,41 @@ onMounted(() => {
       </template>
     </n-page-header>
 
-    <n-tabs type="card" class="mt-4" v-model:value="activeTab">
-      <n-tab-pane name="all" tab="全部" />
-      <n-tab-pane name="ungrouped" tab="未分组" />
+    <n-tabs type="card" class="mt-4" v-model:value="activeTab" @update:value="showDropdown = false">
+      <n-tab-pane name="all" :tab="`全部 (${groupCounts.all})`" />
+      <n-tab-pane name="ungrouped" :tab="`未分组 (${groupCounts.ungrouped})`" />
       <n-tab-pane
         v-for="group in subscriptionGroupStore.groups"
         :key="group.id"
         :name="group.id"
-        :tab="group.name"
-      />
+      >
+        <template #tab>
+          <div
+            class="group-tab-wrapper"
+            @click.prevent="handleTabClick(group, $event)"
+            @contextmenu.prevent="handleContextMenu(group, $event)"
+          >
+            <span :style="{ color: group.is_enabled ? '' : '#999', marginRight: '8px' }">
+              {{ group.name }} ({{ groupCounts[group.id] || 0 }})
+            </span>
+            <n-button text class="group-actions-button">
+              <n-icon :component="MoreIcon" />
+            </n-button>
+          </div>
+        </template>
+      </n-tab-pane>
     </n-tabs>
+
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :x="dropdownX"
+      :y="dropdownY"
+      :options="activeDropdownGroup ? getDropdownOptions(activeDropdownGroup) : []"
+      :show="showDropdown"
+      @select="handleGroupAction"
+      @clickoutside="showDropdown = false"
+    />
 
     <n-data-table
       :columns="columns"
@@ -1011,5 +1195,40 @@ onMounted(() => {
         </n-space>
       </n-form>
     </n-modal>
+
+    <n-modal
+      v-model:show="showEditGroupModal"
+      preset="card"
+      title="重命名分组"
+      style="width: 400px;"
+      :mask-closable="false"
+    >
+      <n-form @submit.prevent="handleUpdateGroup">
+        <n-form-item label="新名称" required>
+          <n-input v-model:value="editingGroupName" placeholder="请输入新的分组名称" />
+        </n-form-item>
+        <n-space justify="end">
+          <n-button @click="showEditGroupModal = false">取消</n-button>
+          <n-button type="primary" @click="handleUpdateGroup" :loading="editGroupLoading">保存</n-button>
+        </n-space>
+      </n-form>
+    </n-modal>
   </div>
 </template>
+
+<style scoped>
+.group-tab-wrapper {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+}
+
+.group-actions-button {
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.group-tab-wrapper:hover .group-actions-button {
+  opacity: 1;
+}
+</style>
