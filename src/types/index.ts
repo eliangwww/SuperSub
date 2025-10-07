@@ -20,6 +20,7 @@ export interface Subscription {
   name: string;
   url: string;
   node_count?: number;
+  enabled: number; // 0 or 1
   created_at: string;
   updated_at: string;
   last_updated?: string;
