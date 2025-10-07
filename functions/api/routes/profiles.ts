@@ -6,6 +6,111 @@ import { applySubscriptionRules, parseSubscriptionContent, userAgents } from './
 
 const profiles = new Hono<{ Bindings: Env }>();
 
+
+export const generateProfileNodes = async (env: Env, executionCtx: ExecutionContext, profile: any) => {
+    const content = JSON.parse(profile.content || '{}');
+    const userId = profile.user_id;
+
+    let allNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; group_name?: string; })[] = [];
+
+    if (content.subscription_ids && content.subscription_ids.length > 0) {
+        const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
+        let { results: subscriptions } = await env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
+
+        const airportOptions = content.airport_subscription_options || {};
+
+        if (subscriptions && subscriptions.length > 0) {
+            if (airportOptions.random) {
+                const randomIndex = Math.floor(Math.random() * subscriptions.length);
+                subscriptions = [subscriptions[randomIndex]];
+            } else if (airportOptions.polling) {
+                const mode = airportOptions.polling_mode || 'hourly';
+                if (mode === 'request') {
+                    const currentIndex = profile.polling_index || 0;
+                    const pollingIndex = currentIndex % subscriptions.length;
+                    subscriptions = [subscriptions[pollingIndex]];
+
+                    const nextIndex = (pollingIndex + 1) % subscriptions.length;
+                    executionCtx.waitUntil(
+                        env.DB.prepare('UPDATE profiles SET polling_index = ? WHERE id = ?')
+                            .bind(nextIndex, profile.id)
+                            .run()
+                    );
+                } else if (mode === 'hourly') {
+                    const hour = new Date().getHours();
+                    const pollingIndex = hour % subscriptions.length;
+                    subscriptions = [subscriptions[pollingIndex]];
+                }
+            }
+        }
+
+        for (const sub of subscriptions) {
+            try {
+                const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
+                if (response.ok) {
+                    const subContent = await response.text();
+                    let nodes = parseSubscriptionContent(subContent);
+
+                    const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
+                    if (rules && rules.length > 0) {
+                        nodes = applySubscriptionRules(nodes, rules);
+                    }
+                    const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
+                    allNodes.push(...nodesWithSubName);
+                }
+            } catch (e) {
+                console.error(`Failed to process subscription ${sub.id}:`, e);
+            }
+        }
+    }
+
+    if (content.node_ids && content.node_ids.length > 0) {
+        const nodePlaceholders = content.node_ids.map(() => '?').join(',');
+        const manualNodesQuery = `
+            SELECT n.*, g.name as group_name
+            FROM nodes n
+            LEFT JOIN node_groups g ON n.group_id = g.id
+            WHERE n.id IN (${nodePlaceholders}) AND n.user_id = ?
+        `;
+        const { results: manualNodes } = await env.DB.prepare(manualNodesQuery).bind(...content.node_ids, userId).all<any>();
+        
+        const parsedManualNodes = manualNodes.map((n: any) => ({
+            id: n.id,
+            name: n.name,
+            protocol: n.protocol,
+            server: n.server,
+            port: n.port,
+            protocol_params: JSON.parse(n.protocol_params || '{}'),
+            link: n.link,
+            raw: n.link,
+            group_name: n.group_name,
+        }));
+
+        const taggedManualNodes = parsedManualNodes.map((node: any) => ({ ...node, isManual: true }));
+        allNodes.push(...taggedManualNodes);
+    }
+
+    const prefixSettings = content.node_prefix_settings || {};
+    if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix || prefixSettings.enable_group_name_prefix) {
+        allNodes = allNodes.map(node => {
+            if (prefixSettings.enable_subscription_prefix && node.subscriptionName) {
+                return { ...node, name: `${node.subscriptionName} - ${node.name}` };
+            }
+            if (node.isManual) {
+                if (prefixSettings.enable_group_name_prefix && node.group_name) {
+                    return { ...node, name: `${node.group_name} - ${node.name}` };
+                }
+                if (prefixSettings.manual_node_prefix) {
+                    return { ...node, name: `${prefixSettings.manual_node_prefix} - ${node.name}` };
+                }
+            }
+            return node;
+        });
+    }
+    
+    return allNodes;
+};
+
 // This is a public endpoint, no auth on this specific route
 profiles.get('/:identifier/subscribe', async (c) => {
     c.status(410); // Gone
@@ -26,97 +131,7 @@ profiles.get('/:id/preview-nodes', async (c) => {
     }
 
     try {
-        const content = JSON.parse(profile.content || '{}');
-        const userId = profile.user_id;
-
-        let allNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; group_name?: string; })[] = [];
-
-        if (content.subscription_ids && content.subscription_ids.length > 0) {
-            const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
-            let { results: subscriptions } = await c.env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
-
-            const airportOptions = content.airport_subscription_options || {};
-
-            if (subscriptions && subscriptions.length > 0) {
-                if (airportOptions.random) {
-                    const randomIndex = Math.floor(Math.random() * subscriptions.length);
-                    subscriptions = [subscriptions[randomIndex]];
-                } else if (airportOptions.polling) {
-                    // Stateless polling based on the current hour.
-                    // This provides a simple rotation without needing to store state.
-                    const hour = new Date().getHours();
-                    const pollingIndex = hour % subscriptions.length;
-                    subscriptions = [subscriptions[pollingIndex]];
-                }
-            }
-
-            for (const sub of subscriptions) {
-                try {
-                    const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
-                    if (response.ok) {
-                        const subContent = await response.text();
-                        let nodes = parseSubscriptionContent(subContent);
-
-                        const { results: rules } = await c.env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
-                        if (rules && rules.length > 0) {
-                            nodes = applySubscriptionRules(nodes, rules);
-                        }
-                        const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
-                        allNodes.push(...nodesWithSubName);
-                    }
-                } catch (e) {
-                    // console.error(`Failed to process subscription ${sub.id}:`, e);
-                }
-            }
-        }
-
-        if (content.node_ids && content.node_ids.length > 0) {
-            const nodePlaceholders = content.node_ids.map(() => '?').join(',');
-            const manualNodesQuery = `
-                SELECT n.*, g.name as group_name
-                FROM nodes n
-                LEFT JOIN node_groups g ON n.group_id = g.id
-                WHERE n.id IN (${nodePlaceholders}) AND n.user_id = ?
-            `;
-            const { results: manualNodes } = await c.env.DB.prepare(manualNodesQuery).bind(...content.node_ids, userId).all<any>();
-            
-            const parsedManualNodes = manualNodes.map(n => ({
-                id: n.id,
-                name: n.name,
-                protocol: n.protocol,
-                server: n.server,
-                port: n.port,
-                protocol_params: JSON.parse(n.protocol_params || '{}'),
-                link: n.link,
-                raw: n.link,
-                group_name: n.group_name, // Keep group name for prefixing
-            }));
-
-            const taggedManualNodes = parsedManualNodes.map(node => ({ ...node, isManual: true }));
-            allNodes.push(...taggedManualNodes);
-        }
-
-        const prefixSettings = content.node_prefix_settings || {};
-        if (prefixSettings.enable_subscription_prefix || prefixSettings.manual_node_prefix || prefixSettings.enable_group_name_prefix) {
-            allNodes = allNodes.map(node => {
-                // Subscription prefix logic (unchanged)
-                if (prefixSettings.enable_subscription_prefix && node.subscriptionName) {
-                    return { ...node, name: `${node.subscriptionName} - ${node.name}` };
-                }
-
-                // Manual node prefixing logic (new priority)
-                if (node.isManual) {
-                    if (prefixSettings.enable_group_name_prefix && node.group_name) {
-                        return { ...node, name: `${node.group_name} - ${node.name}` };
-                    }
-                    if (prefixSettings.manual_node_prefix) {
-                        return { ...node, name: `${prefixSettings.manual_node_prefix} - ${node.name}` };
-                    }
-                }
-                
-                return node;
-            });
-        }
+        const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile);
         
         const analysis = {
             total: allNodes.length,
@@ -136,7 +151,7 @@ profiles.get('/:id/preview-nodes', async (c) => {
         return c.json({ success: true, data: { nodes: allNodes, analysis: analysis } });
 
     } catch (e: any) {
-        // console.error(`Error generating profile preview for ${id}:`, e);
+        console.error(`Error generating profile preview for ${id}:`, e);
         return c.json({ success: false, message: `Internal server error: ${e.message}` }, 500);
     }
 });
@@ -148,7 +163,8 @@ profiles.get('/', async (c) => {
     const expandedResults = results.map(profile => {
         try {
             const content = JSON.parse(profile.content || '{}');
-            return { ...content, ...profile };
+            // Spread profile first, then content, so content values overwrite table's root column values
+            return { ...profile, ...content };
         } catch (e) {
             console.error(`Failed to parse content for profile ${profile.id}:`, e);
             return profile;
@@ -200,7 +216,8 @@ profiles.get('/:id', async (c) => {
 
     try {
         const content = JSON.parse(profile.content || '{}');
-        const expandedProfile = { ...content, ...profile };
+        // Spread profile first, then content, so content values overwrite table's root column values
+        const expandedProfile = { ...profile, ...content };
         return c.json({ success: true, data: expandedProfile });
     } catch (e) {
         console.error(`Failed to parse content for profile ${id}:`, e);

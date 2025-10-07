@@ -233,6 +233,30 @@ subscriptions.get('/for-select', async (c) => {
     const { results } = await c.env.DB.prepare('SELECT id, name FROM subscriptions WHERE user_id = ?').bind(user.id).all();
     return c.json({ success: true, data: results });
 });
+subscriptions.get('/grouped', async (c) => {
+    const user = c.get('jwtPayload');
+    const { results: subscriptions } = await c.env.DB.prepare(`
+        SELECT s.id, s.name, sg.name as group_name
+        FROM subscriptions s
+        LEFT JOIN subscription_groups sg ON s.group_id = sg.id
+        WHERE s.user_id = ?
+        ORDER BY sg.name, s.name
+    `).bind(user.id).all<{ id: string; name: string; group_name: string | null }>();
+
+    const groupedSubscriptions: Record<string, { id: string; name: string }[]> = {};
+
+    if (subscriptions) {
+        for (const sub of subscriptions) {
+            const groupName = sub.group_name || '未分组';
+            if (!groupedSubscriptions[groupName]) {
+                groupedSubscriptions[groupName] = [];
+            }
+            groupedSubscriptions[groupName].push({ id: sub.id, name: sub.name });
+        }
+    }
+
+    return c.json({ success: true, data: groupedSubscriptions });
+});
 
 subscriptions.post('/', async (c) => {
     const user = c.get('jwtPayload');
@@ -277,8 +301,16 @@ subscriptions.post('/batch-import', async (c) => {
 
 // This function will be called by both individual and batch updates.
 const updateSingleSubscription = async (db: D1Database, sub: { id: string; url: string }): Promise<{ success: boolean; data?: any; error?: string }> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10-second timeout
+
     try {
-        const response = await fetch(sub.url, { headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] } });
+        const response = await fetch(sub.url, {
+            headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] },
+            signal: controller.signal,
+        });
+        clearTimeout(timeoutId); // Clear the timeout if the fetch completes in time
+
         if (!response.ok) {
             const error = `Failed to fetch: ${response.status} ${response.statusText}`;
             await db.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), error, sub.id).run();
@@ -324,7 +356,11 @@ const updateSingleSubscription = async (db: D1Database, sub: { id: string; url: 
         return { success: true, data: updatedSub };
 
     } catch (error: any) {
-        const errorMessage = `Update failed: ${error.message}`;
+        clearTimeout(timeoutId);
+        let errorMessage = `Update failed: ${error.message}`;
+        if (error.name === 'AbortError') {
+            errorMessage = 'Update failed: The request timed out after 10 seconds.';
+        }
         await db.prepare('UPDATE subscriptions SET last_updated = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), errorMessage, sub.id).run();
         return { success: false, error: errorMessage };
     }
