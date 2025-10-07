@@ -211,7 +211,7 @@ subscriptions.post('/', async (c) => {
 
 subscriptions.post('/batch-import', async (c) => {
     const user = c.get('jwtPayload');
-    const { subscriptions: subs } = await c.req.json<{ subscriptions: any[] }>();
+    const { subscriptions: subs, groupId } = await c.req.json<{ subscriptions: any[], groupId?: string }>();
 
     if (!Array.isArray(subs) || subs.length === 0) {
         return c.json({ success: false, message: 'No subscriptions to import' }, 400);
@@ -221,14 +221,14 @@ subscriptions.post('/batch-import', async (c) => {
     const stmts = subs.map(sub => {
         const id = crypto.randomUUID();
         return c.env.DB.prepare(
-            `INSERT INTO subscriptions (id, user_id, name, url, updated_at, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)`
-        ).bind(id, user.id, sub.name, sub.url, now, now);
+            `INSERT INTO subscriptions (id, user_id, name, url, group_id, updated_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).bind(id, user.id, sub.name, sub.url, groupId || null, now, now);
     });
 
     await c.env.DB.batch(stmts);
 
-    return c.json({ success: true, message: `Successfully imported ${subs.length} subscriptions.` });
+    return c.json({ success: true, data: { message: `Successfully imported ${subs.length} subscriptions.` } });
 });
 
 subscriptions.post('/update-all', async (c) => {
@@ -522,6 +522,25 @@ subscriptions.post('/batch-delete', async (c) => {
     await c.env.DB.prepare(query).bind(...bindings).run();
 
     return c.json({ success: true, message: `Successfully deleted ${ids.length} subscriptions.` });
+});
+
+
+subscriptions.post('/batch-update-group', async (c) => {
+    const user = c.get('jwtPayload');
+    const { subscriptionIds, groupId } = await c.req.json<{ subscriptionIds: string[], groupId: string | null }>();
+
+    if (!Array.isArray(subscriptionIds) || subscriptionIds.length === 0) {
+        return c.json({ success: false, message: 'No subscription IDs provided' }, 400);
+    }
+
+    const placeholders = subscriptionIds.map(() => '?').join(',');
+    const query = `UPDATE subscriptions SET group_id = ? WHERE user_id = ? AND id IN (${placeholders})`;
+    
+    const bindings = [groupId, user.id, ...subscriptionIds];
+    
+    await c.env.DB.prepare(query).bind(...bindings).run();
+
+    return c.json({ success: true, message: 'Subscriptions moved successfully.' });
 });
 
 export default subscriptions;

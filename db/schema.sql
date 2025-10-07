@@ -54,7 +54,22 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   exclude_keywords TEXT,
   expires_at DATETIME,
   subscription_info TEXT,
-  FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+  group_id TEXT,
+  FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+  FOREIGN KEY (group_id) REFERENCES subscription_groups (id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS subscription_groups (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  sort_order INTEGER DEFAULT 0,
+  is_enabled BOOLEAN DEFAULT TRUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+  UNIQUE (user_id, name)
 );
 
 -- Create subconverter_assets table

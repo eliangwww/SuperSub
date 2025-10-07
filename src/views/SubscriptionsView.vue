@@ -1,18 +1,22 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, h, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon } from 'naive-ui'
+import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane } from 'naive-ui'
 import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline } from '@vicons/ionicons5'
 import type { DataTableColumns, FormInst } from 'naive-ui'
-import { Subscription, Node, ApiResponse, SubconverterAsset } from '@/types'
+import { Subscription, Node, ApiResponse } from '@/types'
 import { api } from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
+import { useSubscriptionGroupStore } from '@/stores/subscriptionGroups'
+import { useGroupStore as useNodeGroupStore } from '@/stores/groups'
 import SubscriptionNodesPreview from '@/components/SubscriptionNodesPreview.vue'
 import { format } from 'date-fns'
 
 const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
+const subscriptionGroupStore = useSubscriptionGroupStore()
+const nodeGroupStore = useNodeGroupStore()
 
 const subscriptions = ref<Subscription[]>([])
 const loading = ref(true)
@@ -21,27 +25,27 @@ const saveLoading = ref(false)
 const updatingId = ref<string | null>(null)
 const editingSubscription = ref<Subscription | null>(null)
 const updatingAll = ref(false)
+const activeTab = ref('all')
 
 // For bulk import
 const showImportModal = ref(false)
 const importUrls = ref('')
 const importLoading = ref(false)
+const importGroupId = ref<string | undefined>(undefined)
 
 // For batch actions
 const checkedRowKeys = ref<string[]>([])
 
-// For subscription preview
-const showPreviewModal = ref(false)
-const previewUrl = ref('')
-const previewLoading = ref(false)
-const previewData = ref<{
-  nodes: Partial<Node>[];
-  analysis: {
-    total: number;
-    protocols: Record<string, number>;
-    regions: Record<string, number>;
-  };
-} | null>(null)
+// For moving subscriptions to a group
+const showMoveToGroupModal = ref(false)
+const moveToGroupId = ref<string | null>(null)
+const moveToGroupLoading = ref(false)
+
+// For adding a new subscription group
+const showAddGroupModal = ref(false)
+const newGroupName = ref('')
+const addGroupLoading = ref(false)
+
 
 // For Node Preview in Modal
 const showNodePreviewModal = ref(false)
@@ -64,7 +68,6 @@ const ruleFormState = reactive({
   type: 'filter_by_name_keyword' as import('@/types').SubscriptionRule['type'] | 'exclude_by_name_keyword',
   value: '',
   enabled: 1,
-  // Fields for user-friendly forms
   keywords: [] as string[],
   renameRegex: '',
   renameFormat: '',
@@ -96,7 +99,6 @@ const addKeyword = (keyword: string) => {
   }
 }
 
-
 const formState = reactive({
   id: '',
   name: '',
@@ -104,6 +106,14 @@ const formState = reactive({
 })
 
 const modalTitle = computed(() => (editingSubscription.value ? '编辑订阅' : '新增订阅'))
+
+const filteredSubscriptions = computed(() => {
+  return subscriptions.value.filter(sub => {
+    if (activeTab.value === 'all') return true
+    if (activeTab.value === 'ungrouped') return !sub.group_id
+    return sub.group_id === activeTab.value
+  })
+})
 
 const formatBytes = (bytes: number, decimals = 2) => {
   if (bytes === 0) return '0 Bytes';
@@ -125,7 +135,6 @@ const parseSubscriptionInfo = (info: string) => {
     return data;
 };
 
-
 const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRules }: {
     onEdit: (row: Subscription) => void,
     onUpdate: (row: Subscription) => void,
@@ -135,13 +144,8 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
 }): DataTableColumns<Subscription> => {
   return [
     { type: 'selection' },
-    { title: '名称', key: 'name', sorter: 'default', width: 150 },
-    {
-      title: '订阅链接',
-      key: 'url',
-      ellipsis: { tooltip: true },
-      width: 150,
-    },
+    { title: '名称', key: 'name', sorter: 'default', width: 150, ellipsis: { tooltip: true } },
+    { title: '订阅链接', key: 'url', ellipsis: { tooltip: true }, width: 150 },
     {
       title: '状态',
       key: 'status',
@@ -177,24 +181,16 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
       width: 120,
       render(row) {
         if (!row.subscription_info) return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
-
         const info = parseSubscriptionInfo(row.subscription_info);
         const remaining = info.total - (info.upload + info.download);
-        
         if (isNaN(remaining) || info.total === 0) {
             return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
         }
-
         const usagePercentage = (info.upload + info.download) / info.total;
         let tagType: 'success' | 'warning' | 'error' = 'success';
-        if (usagePercentage > 0.9) {
-            tagType = 'error';
-        } else if (usagePercentage > 0.7) {
-            tagType = 'warning';
-        }
-
+        if (usagePercentage > 0.9) tagType = 'error';
+        else if (usagePercentage > 0.7) tagType = 'warning';
         const tooltipContent = `总流量: ${formatBytes(info.total)}\n已用(U/D): ${formatBytes(info.upload)} / ${formatBytes(info.download)}`;
-
         return h(NTooltip, null, {
           trigger: () => h(NTag, { type: tagType, size: 'small', round: true }, { default: () => formatBytes(remaining) }),
           default: () => h('pre', { style: 'white-space: pre-wrap;' }, tooltipContent),
@@ -208,25 +204,17 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
       sorter: (a, b) => new Date(a.expires_at || 0).getTime() - new Date(b.expires_at || 0).getTime(),
       render(row) {
         if (!row.expires_at) return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
-
         const now = new Date();
         const expiry = new Date(row.expires_at);
         const diffTime = expiry.getTime() - now.getTime();
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
         if (diffDays < 0) {
             return h(NTag, { type: 'error', size: 'small', round: true }, { default: () => '已过期' });
         }
-
         let tagType: 'success' | 'warning' | 'error' = 'success';
-        if (diffDays <= 3) {
-            tagType = 'error';
-        } else if (diffDays <= 7) {
-            tagType = 'warning';
-        }
-        
+        if (diffDays <= 3) tagType = 'error';
+        else if (diffDays <= 7) tagType = 'warning';
         const tooltipContent = `到期时间: ${format(expiry, 'yyyy-MM-dd HH:mm')}`;
-
         return h(NTooltip, null, {
           trigger: () => h(NTag, { type: tagType, size: 'small', round: true }, { default: () => `${diffDays} 天` }),
           default: () => tooltipContent,
@@ -254,7 +242,6 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
             default: () => tooltip,
           });
         };
-
         return h(NSpace, null, {
           default: () => [
             createTooltipButton('预览节点', EyeOutline, () => onPreviewNodes(row)),
@@ -271,7 +258,7 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
 
 const openModal = (sub: Subscription | null = null) => {
   if (sub) {
-    editingSubscription.value = { ...sub } // Create a shallow copy
+    editingSubscription.value = { ...sub }
     formState.id = sub.id
     formState.name = sub.name
     formState.url = sub.url
@@ -291,7 +278,6 @@ const closeModal = () => {
 const fetchSubscriptions = async () => {
   const authStore = useAuthStore()
   if (!authStore.isAuthenticated) return
-
   loading.value = true
   try {
     const subsResponse = await api.get<ApiResponse<Subscription[]>>('/subscriptions')
@@ -310,14 +296,10 @@ const fetchSubscriptions = async () => {
 const handleSave = async () => {
   saveLoading.value = true
   try {
-    const payload = {
-      name: formState.name,
-      url: formState.url,
-    }
+    const payload = { name: formState.name, url: formState.url }
     const response = editingSubscription.value
       ? await api.put<ApiResponse>(`/subscriptions/${editingSubscription.value.id}`, payload)
       : await api.post<ApiResponse>('/subscriptions', payload)
-
     if (response.data.success) {
       message.success(editingSubscription.value ? '订阅更新成功' : '订阅新增成功')
       closeModal()
@@ -372,68 +354,10 @@ const handleUpdate = async (row: Subscription) => {
   }
 }
 
-const handlePreview = async () => {
-  if (!previewUrl.value.trim()) {
-    message.warning('请输入需要预览的订阅链接')
-    return
-  }
-  previewLoading.value = true
-  previewData.value = null
-  try {
-    const response = await api.post<ApiResponse>('/subscriptions/preview', { url: previewUrl.value })
-    if (response.data.success && response.data.data) {
-      previewData.value = response.data.data
-      showPreviewModal.value = true
-    } else {
-      message.error(response.data.message || '预览失败')
-    }
-  } catch (err) {
-    message.error('请求失败，请检查链接或网络')
-  } finally {
-    previewLoading.value = false
-  }
-}
-
-const openPreviewModal = () => {
-  previewUrl.value = ''
-  previewData.value = null
-  showPreviewModal.value = true
-}
-
-const previewNodeColumns: DataTableColumns<Partial<Node>> = [
-  { title: '节点名称', key: 'name', ellipsis: { tooltip: true } },
-  { title: '类型', key: 'type', width: 80, align: 'center' },
-  { title: '服务器', key: 'server', width: 150, ellipsis: { tooltip: true } },
-  { title: '端口', key: 'port', width: 80, align: 'center' },
-]
-
-const handleImportFromPreview = async () => {
-  if (!previewData.value || !previewData.value.nodes || previewData.value.nodes.length === 0) {
-    message.warning('没有可导入的节点');
-    return;
-  }
-
-  importLoading.value = true;
-  try {
-    // Send the array of parsed node objects directly
-    const response = await api.post<ApiResponse>('/nodes/batch-import', { nodes: previewData.value.nodes });
-    if (response.data.success) {
-      message.success(response.data.message || '节点导入成功');
-      showPreviewModal.value = false;
-    } else {
-      message.error(response.data.message || '导入失败');
-    }
-  } catch (error) {
-    message.error('请求失败，请稍后重试');
-  } finally {
-    importLoading.value = false;
-  }
-};
 
 const handlePreviewNodes = (row: Subscription) => {
     currentSubscriptionForPreview.value = row
     showNodePreviewModal.value = true
-    // Use nextTick to ensure the component is mounted before calling its method
     nextTick(() => {
         nodePreviewRef.value?.fetchPreview()
     })
@@ -441,6 +365,7 @@ const handlePreviewNodes = (row: Subscription) => {
 
 const openImportModal = () => {
   importUrls.value = ''
+  importGroupId.value = undefined
   showImportModal.value = true
 }
 
@@ -451,7 +376,6 @@ const handleUpdateAll = async () => {
     const response = await api.post<ApiResponse>('/subscriptions/update-all')
     if (response.data.success) {
       message.success(response.data.message || '后台更新任务已启动')
-      // Wait a few seconds for the background job to process, then refresh
       setTimeout(() => {
         fetchSubscriptions()
       }, 5000)
@@ -471,35 +395,30 @@ const handleBulkImport = async () => {
     return
   }
   importLoading.value = true
-
   const lines = importUrls.value.split('\n').map(line => line.trim()).filter(Boolean)
   const subscriptionsToCreate: { name: string; url: string }[] = []
-
   for (const line of lines) {
     const parts = line.split(',').map(part => part.trim())
     if (parts.length === 2 && parts[1].startsWith('http')) {
       subscriptionsToCreate.push({ name: parts[0], url: parts[1] })
     } else if (parts.length === 1 && parts[0].startsWith('http')) {
-      // Try to derive a name from the URL
       try {
         const urlObj = new URL(parts[0])
         const name = urlObj.hostname
         subscriptionsToCreate.push({ name: name, url: parts[0] })
-      } catch (e) {
-        // Ignore invalid URL
-      }
+      } catch (e) { /* Ignore invalid URL */ }
     }
   }
-
   if (subscriptionsToCreate.length === 0) {
     message.warning('没有找到有效的订阅链接。格式应为 "名称,链接" 或直接是链接。')
     importLoading.value = false
     return
   }
-
   try {
-    const response = await api.post<ApiResponse>('/subscriptions/batch-import', { subscriptions: subscriptionsToCreate })
-
+    const response = await api.post<ApiResponse>('/subscriptions/batch-import', {
+      subscriptions: subscriptionsToCreate,
+      groupId: importGroupId.value
+    })
     if (response.data.success) {
       message.success(response.data.data?.message || `成功导入 ${response.data.data?.created || 0} 个订阅`)
       showImportModal.value = false
@@ -541,8 +460,55 @@ const handleBatchDelete = () => {
   });
 };
 
-// --- Subscription Rules Logic ---
+const handleMoveToGroup = async () => {
+  if (checkedRowKeys.value.length === 0) {
+    message.warning('请至少选择一个订阅');
+    return;
+  }
+  moveToGroupLoading.value = true;
+  try {
+    const response = await api.post('/subscriptions/batch-update-group', {
+      subscriptionIds: checkedRowKeys.value,
+      groupId: moveToGroupId.value,
+    });
+    if (response.data.success) {
+      message.success('订阅分组更新成功');
+      showMoveToGroupModal.value = false;
+      checkedRowKeys.value = [];
+      fetchSubscriptions();
+    } else {
+      message.error(response.data.message || '移动失败');
+    }
+  } catch (error: any) {
+    message.error(error.message || '请求失败');
+  } finally {
+    moveToGroupLoading.value = false;
+  }
+};
 
+const handleSaveGroup = async () => {
+  if (!newGroupName.value.trim()) {
+    message.warning('分组名称不能为空');
+    return;
+  }
+  addGroupLoading.value = true;
+  try {
+    const response = await subscriptionGroupStore.addGroup(newGroupName.value);
+    if (response.success) {
+      message.success('分组创建成功');
+      showAddGroupModal.value = false;
+      newGroupName.value = '';
+    } else {
+      message.error(response.message || '创建失败');
+    }
+  } catch (error: any) {
+    message.error(error.message || '创建失败');
+  } finally {
+    addGroupLoading.value = false;
+  }
+};
+
+// --- Subscription Rules Logic ---
 const fetchRules = async (subscriptionId: string) => {
   rulesLoading.value = true
   try {
@@ -568,7 +534,6 @@ const onManageRules = (sub: Subscription) => {
 const handleDeleteRule = (rule: import('@/types').SubscriptionRule) => {
   if (!currentSubscriptionForRules.value) return
   const subId = currentSubscriptionForRules.value.id
-
   dialog.warning({
     title: '确认删除规则',
     content: `确定要删除规则 "${rule.name}" 吗？`,
@@ -579,7 +544,7 @@ const handleDeleteRule = (rule: import('@/types').SubscriptionRule) => {
         const response = await api.delete<ApiResponse>(`/subscriptions/${subId}/rules/${rule.id}`)
         if (response.data.success) {
           message.success('规则删除成功')
-          fetchRules(subId) // Refresh list
+          fetchRules(subId)
         } else {
           message.error(response.data.message || '删除失败')
         }
@@ -591,7 +556,6 @@ const handleDeleteRule = (rule: import('@/types').SubscriptionRule) => {
 }
 
 const openRuleFormModal = (rule: import('@/types').SubscriptionRule | null) => {
-  // Reset all fields first
   ruleFormState.id = 0
   ruleFormState.name = ''
   ruleFormState.type = 'filter_by_name_keyword'
@@ -602,16 +566,13 @@ const openRuleFormModal = (rule: import('@/types').SubscriptionRule | null) => {
   ruleFormState.renameFormat = ''
   ruleFormState.regex = ''
   editingRule.value = null
-
   if (rule) {
     editingRule.value = rule
     ruleFormState.id = rule.id
     ruleFormState.name = rule.name
     ruleFormState.type = rule.type
-    ruleFormState.value = rule.value // Keep original JSON value for reference
+    ruleFormState.value = rule.value
     ruleFormState.enabled = rule.enabled
-
-    // Parse JSON value into user-friendly fields
     try {
       const parsedValue = JSON.parse(rule.value)
       if ((rule.type === 'filter_by_name_keyword' || rule.type === 'exclude_by_name_keyword') && parsedValue.keywords) {
@@ -624,20 +585,16 @@ const openRuleFormModal = (rule: import('@/types').SubscriptionRule | null) => {
       }
     } catch (e) {
       console.error("Failed to parse rule value JSON:", e)
-      // If parsing fails, the raw JSON can still be edited in the fallback input
     }
   }
-  
   showRuleFormModal.value = true
 }
 
 const handleSaveRule = async () => {
   if (!currentSubscriptionForRules.value) return
   const subId = currentSubscriptionForRules.value.id
-  
   ruleSaveLoading.value = true
   try {
-    // Construct the JSON value based on the rule type
     let jsonValue = {}
     if (ruleFormState.type === 'filter_by_name_keyword' || ruleFormState.type === 'exclude_by_name_keyword') {
       jsonValue = { keywords: ruleFormState.keywords }
@@ -646,7 +603,6 @@ const handleSaveRule = async () => {
     } else if (ruleFormState.type === 'filter_by_name_regex') {
       jsonValue = { regex: ruleFormState.regex }
     } else {
-      // For unknown types, try to parse the raw value to ensure it's valid JSON
       try {
         jsonValue = JSON.parse(ruleFormState.value)
       } catch (e) {
@@ -655,21 +611,18 @@ const handleSaveRule = async () => {
         return
       }
     }
-
     const payload = {
       name: ruleFormState.name,
       type: ruleFormState.type,
       value: JSON.stringify(jsonValue),
-      enabled: ruleFormState.enabled === 1, // Ensure it's a boolean for the API
+      enabled: ruleFormState.enabled === 1,
     }
-
     let response;
     if (editingRule.value) {
       response = await api.put<ApiResponse>(`/subscriptions/${subId}/rules/${editingRule.value.id}`, payload)
     } else {
       response = await api.post<ApiResponse>(`/subscriptions/${subId}/rules`, payload)
     }
-
     if (response.data.success) {
       message.success(editingRule.value ? '规则更新成功' : '规则创建成功')
       showRuleFormModal.value = false
@@ -717,7 +670,7 @@ const createRuleColumns = ({ onEdit, onDelete }: {
               message.success('状态更新成功')
             } catch (e) {
               message.error('状态更新失败')
-              row.enabled = !value ? 1 : 0 // Revert on failure
+              row.enabled = !value ? 1 : 0
             }
           }
         })
@@ -744,10 +697,6 @@ const ruleColumns = createRuleColumns({
   onDelete: handleDeleteRule,
 })
 
-// --- End of Subscription Rules Logic ---
-
-// --- End of Conversion Link Generation Logic ---
-
 const columns = createColumns({
     onEdit: openModal,
     onUpdate: handleUpdate,
@@ -756,7 +705,11 @@ const columns = createColumns({
     onManageRules: onManageRules,
 })
 
-onMounted(fetchSubscriptions)
+onMounted(() => {
+  fetchSubscriptions()
+  subscriptionGroupStore.fetchGroups()
+  nodeGroupStore.fetchGroups()
+})
 </script>
 
 <template>
@@ -770,15 +723,27 @@ onMounted(fetchSubscriptions)
           <n-button type="primary" ghost @click="handleUpdateAll" :loading="updatingAll">更新全部</n-button>
           <n-button type="primary" @click="openModal(null)">新增订阅</n-button>
           <n-button type="info" @click="openImportModal">批量导入</n-button>
+          <n-button type="primary" ghost @click="showAddGroupModal = true">新增分组</n-button>
+          <n-button type="primary" ghost @click="showMoveToGroupModal = true" :disabled="checkedRowKeys.length === 0">移动到分组</n-button>
           <n-button type="error" ghost @click="handleBatchDelete" :disabled="checkedRowKeys.length === 0">批量删除</n-button>
-          <n-button type="warning" ghost @click="openPreviewModal">链接预览</n-button>
         </n-space>
       </template>
     </n-page-header>
 
+    <n-tabs type="card" class="mt-4" v-model:value="activeTab">
+      <n-tab-pane name="all" tab="全部" />
+      <n-tab-pane name="ungrouped" tab="未分组" />
+      <n-tab-pane
+        v-for="group in subscriptionGroupStore.groups"
+        :key="group.id"
+        :name="group.id"
+        :tab="group.name"
+      />
+    </n-tabs>
+
     <n-data-table
       :columns="columns"
-      :data="subscriptions"
+      :data="filteredSubscriptions"
       :loading="loading"
       :pagination="{ pageSize: 10 }"
       :bordered="false"
@@ -825,6 +790,14 @@ onMounted(fetchSubscriptions)
             :autosize="{ minRows: 10, maxRows: 20 }"
           />
         </n-form-item>
+        <n-form-item label="导入到分组">
+          <n-select
+            v-model:value="importGroupId"
+            placeholder="默认导入到“未分组”"
+            :options="subscriptionGroupStore.groups.map(g => ({ label: g.name, value: g.id }))"
+            clearable
+          />
+        </n-form-item>
         <n-space justify="end">
           <n-button @click="showImportModal = false">取消</n-button>
           <n-button type="primary" @click="handleBulkImport" :loading="importLoading">导入</n-button>
@@ -832,65 +805,7 @@ onMounted(fetchSubscriptions)
       </n-form>
     </n-modal>
 
-    <n-modal
-      v-model:show="showPreviewModal"
-      preset="card"
-      title="订阅链接预览"
-      style="width: 800px;"
-      :mask-closable="true"
-    >
-      <n-form @submit.prevent="handlePreview">
-        <n-form-item label="订阅链接 URL">
-          <n-input v-model:value="previewUrl" placeholder="粘贴需要预览的订阅链接地址" />
-        </n-form-item>
-        <n-space justify="end">
-          <n-button type="primary" @click="handlePreview" :loading="previewLoading">开始预览</n-button>
-        </n-space>
-      </n-form>
 
-      <template v-if="previewData">
-        <n-card title="订阅分析" :bordered="false" class="mt-4">
-          <n-grid :cols="3" :x-gap="12">
-            <n-gi>
-              <n-statistic label="节点总数" :value="previewData.analysis.total" />
-            </n-gi>
-            <n-gi>
-              <n-statistic label="协议分布">
-                <n-space>
-                  <n-tag v-for="(count, protocol) in previewData.analysis.protocols" :key="protocol" type="info">
-                    {{ protocol.toUpperCase() }}: {{ count }}
-                  </n-tag>
-                </n-space>
-              </n-statistic>
-            </n-gi>
-            <n-gi>
-              <n-statistic label="地区分布">
-                 <n-space :size="'small'" style="flex-wrap: wrap;">
-                  <n-tag v-for="(count, region) in previewData.analysis.regions" :key="region" type="success">
-                    {{ region }}: {{ count }}
-                  </n-tag>
-                </n-space>
-              </n-statistic>
-            </n-gi>
-          </n-grid>
-        </n-card>
-
-        <n-data-table
-          :columns="previewNodeColumns"
-          :data="previewData.nodes"
-          :pagination="{ pageSize: 5 }"
-          :max-height="300"
-          class="mt-4"
-        />
-        <n-space justify="end" class="mt-4">
-          <n-button type="success" @click="handleImportFromPreview" :loading="importLoading">
-            导入为手动节点
-          </n-button>
-        </n-space>
-      </template>
-    </n-modal>
-
-  </div>
     <n-modal
       v-model:show="showNodePreviewModal"
       preset="card"
@@ -948,6 +863,7 @@ onMounted(fetchSubscriptions)
             <span v-if="ruleFormState.type === 'filter_by_name_keyword'">保留节点名包含任意一个关键词的节点。输入后按回车确认。</span>
             <span v-else>排除节点名包含任意一个关键词的节点。输入后按回车确认。</span>
           </template>
+          
           <div class="mt-2">
             <p class="text-xs text-gray-500 mb-1">常用标签 (点击添加):</p>
             <n-space :size="'small'" style="flex-wrap: wrap;">
@@ -1012,4 +928,46 @@ onMounted(fetchSubscriptions)
         </n-form-item>
       </n-form>
     </n-modal>
+
+    <n-modal
+      v-model:show="showMoveToGroupModal"
+      preset="card"
+      title="移动订阅到分组"
+      style="width: 400px;"
+      :mask-closable="false"
+    >
+      <n-form @submit.prevent="handleMoveToGroup">
+        <n-form-item label="目标分组" required>
+          <n-select
+            v-model:value="moveToGroupId"
+            placeholder="请选择目标分组（可清空变为未分组）"
+            :options="subscriptionGroupStore.groups.map(g => ({ label: g.name, value: g.id }))"
+            clearable
+          />
+        </n-form-item>
+        <n-space justify="end">
+          <n-button @click="showMoveToGroupModal = false">取消</n-button>
+          <n-button type="primary" @click="handleMoveToGroup" :loading="moveToGroupLoading">确认移动</n-button>
+        </n-space>
+      </n-form>
+    </n-modal>
+
+    <n-modal
+      v-model:show="showAddGroupModal"
+      preset="card"
+      title="新增分组"
+      style="width: 400px;"
+      :mask-closable="false"
+    >
+      <n-form @submit.prevent="handleSaveGroup">
+        <n-form-item label="分组名称" required>
+          <n-input v-model:value="newGroupName" placeholder="请输入分组名称" />
+        </n-form-item>
+        <n-space justify="end">
+          <n-button @click="showAddGroupModal = false">取消</n-button>
+          <n-button type="primary" @click="handleSaveGroup" :loading="addGroupLoading">保存</n-button>
+        </n-space>
+      </n-form>
+    </n-modal>
+  </div>
 </template>
