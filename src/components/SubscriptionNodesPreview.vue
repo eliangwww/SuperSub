@@ -30,6 +30,7 @@ const loading = ref(false);
 const importLoading = ref(false);
 const applyRules = ref(false);
 const selectedGroupId = ref<string | undefined>(undefined);
+const error = ref<string | null>(null);
 
 const columns: DataTableColumns<Partial<Node>> = [
     { title: '名称', key: 'name', ellipsis: { tooltip: true }, fixed: 'left', width: 200 },
@@ -84,20 +85,23 @@ const fetchPreview = async () => {
   }
   loading.value = true;
   nodes.value = [];
+  error.value = null;
   try {
     const payload = {
       url: props.subscriptionUrl,
       subscription_id: props.subscriptionId,
       apply_rules: applyRules.value,
     };
-    const response = await api.post<ApiResponse<{ nodes: Partial<Node>[] }>>('/subscriptions/preview', payload);
+    const response = await api.post<ApiResponse<{ nodes: Partial<Node>[] }>>('/subscriptions/preview', payload, { timeout: 15000 });
     if (response.data.success && response.data.data?.nodes) {
       nodes.value = response.data.data.nodes;
     } else {
-      message.error(response.data.message || '获取节点预览失败');
+      throw new Error(response.data.message || '获取节点预览失败');
     }
-  } catch (err) {
-    message.error('请求失败，请稍后重试');
+  } catch (err: any) {
+    const errorMessage = err.message || '请求失败，请检查网络连接或订阅地址。';
+    error.value = errorMessage;
+    message.error(errorMessage);
   } finally {
     loading.value = false;
   }
@@ -180,7 +184,12 @@ onMounted(() => {
       </n-space>
     </n-space>
     <n-spin :show="loading">
+      <div v-if="error" class="py-8 text-center">
+        <p class="text-red-500">{{ error }}</p>
+        <n-button size="small" @click="fetchPreview" class="mt-2">重试</n-button>
+      </div>
       <n-data-table
+        v-else
         :columns="columns"
         :data="nodes"
         :pagination="{ pageSize: 10 }"
@@ -188,10 +197,7 @@ onMounted(() => {
         :max-height="400"
         :scroll-x="660"
       />
-      <n-empty v-if="!loading && nodes.length === 0" description="无法预览或订阅为空" class="py-8">
-        <template #extra>
-          <n-button size="small" @click="fetchPreview">重试</n-button>
-        </template>
+      <n-empty v-if="!loading && !error && nodes.length === 0" description="订阅为空或无有效节点" class="py-8">
       </n-empty>
     </n-spin>
   </div>
