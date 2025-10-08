@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, reactive, h, computed, nextTick } from 'vue'
+import { ref, onMounted, reactive, h, computed, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane, NDropdown, NProgress, NCollapse, NCollapseItem } from 'naive-ui'
-import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline, EllipsisVertical as MoreIcon } from '@vicons/ionicons5'
+import { useMessage, useDialog, NButton, NSpace, NTag, NDataTable, NPageHeader, NModal, NForm, NFormItem, NInput, NTooltip, NGrid, NGi, NStatistic, NCard, NSwitch, NSelect, NDynamicTags, NRadioGroup, NRadioButton, NInputGroup, NIcon, NTabs, NTabPane, NDropdown, NProgress, NCollapse, NCollapseItem, NInputNumber } from 'naive-ui'
+import { EyeOutline, FilterOutline, CreateOutline, SyncOutline, TrashOutline, EllipsisVertical as MoreIcon, SettingsOutline } from '@vicons/ionicons5'
 import type { DataTableColumns, FormInst, DropdownOption } from 'naive-ui'
 import { Subscription, Node, ApiResponse } from '@/types'
 import { api } from '@/utils/api'
@@ -71,6 +71,16 @@ const updateLog = ref<{
 const updateLogLoading = ref(false)
 const updateProgress = ref({ current: 0, total: 0 })
 let updateAbortController: AbortController | null = null
+const subsToUpdate = ref<Subscription[]>([])
+const updateStage = ref<'config' | 'progress'>('config')
+
+// Update settings
+const updateSettings = reactive({
+  concurrency: 5,
+  retries: 2,
+  delay: 500, // ms delay between requests in the same batch
+  batchDelay: 1000, // ms delay between batches
+})
 
 // For Subscription Rules
 const showRulesModal = ref(false)
@@ -435,35 +445,50 @@ const openImportModal = () => {
 }
 
 // A generic function to execute updates in a concurrent pool with progress
-const executeSubscriptionUpdates = async (subsToUpdate: Subscription[]) => {
-  if (subsToUpdate.length === 0) {
+const executeSubscriptionUpdates = async () => {
+  if (subsToUpdate.value.length === 0) {
     message.info('没有需要更新的订阅')
     return
   }
 
-  message.info(`开始更新 ${subsToUpdate.length} 个订阅...`)
-  updateLog.value = { success: [], failed: [] }
-  updateProgress.value = { current: 0, total: subsToUpdate.length }
-  showUpdateLogModal.value = true
+  updateStage.value = 'progress'
   updateLogLoading.value = true
+  message.info(`开始更新 ${subsToUpdate.value.length} 个订阅...`)
 
   updateAbortController = new AbortController()
   const signal = updateAbortController.signal
 
-  const CONCURRENT_LIMIT = 5
-  const tasks = subsToUpdate.map(sub => () => handleUpdate(sub, true, signal))
+  const { concurrency, retries, delay } = updateSettings
+
+  const tasks = subsToUpdate.value.map(sub => async () => {
+    for (let i = 0; i <= retries; i++) {
+      if (signal.aborted) return { success: false, data: sub, error: '已中止' }
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * i)) // Exponential backoff
+      }
+      const result = await handleUpdate(sub, true, signal)
+      if (result.success) {
+        return result
+      }
+      // If it's the last retry and it still fails, return the failed result
+      if (i === retries) {
+        return result
+      }
+    }
+    return { success: false, data: sub, error: '未知重试错误' } // Should not be reached
+  })
   
   const executing = new Set<Promise<any>>()
 
   try {
     for (const [index, task] of tasks.entries()) {
       if (signal.aborted) {
-        // Mark remaining tasks as aborted in the log
-        subsToUpdate.slice(index).forEach(sub => {
+        subsToUpdate.value.slice(index).forEach(sub => {
           updateLog.value.failed.push({ ...sub, error: '已中止' })
         })
         break
       }
+      
       const p = task().then(result => {
         updateProgress.value.current++
         if (result.success) {
@@ -473,15 +498,23 @@ const executeSubscriptionUpdates = async (subsToUpdate: Subscription[]) => {
           updateLog.value.failed.push(failedSub)
         }
       })
+
       executing.add(p)
+      if (delay > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
       p.finally(() => executing.delete(p))
-      if (executing.size >= CONCURRENT_LIMIT) {
+
+      if (executing.size >= concurrency) {
         await Promise.race(executing)
+        // After a batch is completed, wait for the batch delay
+        if (updateSettings.batchDelay > 0) {
+          await new Promise(resolve => setTimeout(resolve, updateSettings.batchDelay))
+        }
       }
     }
     await Promise.all(executing)
   } catch (error) {
-    // This should not be reached if errors are handled inside `handleUpdate`
     console.error('An unexpected error occurred during update execution:', error)
   } finally {
     updateLogLoading.value = false
@@ -494,23 +527,28 @@ const executeSubscriptionUpdates = async (subsToUpdate: Subscription[]) => {
   }
 }
 
+const prepareAndShowUpdateModal = (subs: Subscription[]) => {
+  if (subs.length === 0) {
+    message.info('没有需要更新的订阅')
+    return
+  }
+  subsToUpdate.value = subs
+  updateLog.value = { success: [], failed: [] }
+  updateProgress.value = { current: 0, total: subs.length }
+  updateStage.value = 'config'
+  showUpdateLogModal.value = true
+}
+
 const handleUpdateAll = () => {
-  // If there are checked rows, update them. Otherwise, update all enabled.
-  const subsToUpdate = checkedRowKeys.value.length > 0
+  const subs = checkedRowKeys.value.length > 0
     ? subscriptions.value.filter(s => checkedRowKeys.value.includes(s.id))
     : subscriptions.value.filter(s => s.enabled)
-  
-  executeSubscriptionUpdates(subsToUpdate)
+  prepareAndShowUpdateModal(subs)
 }
 
 const handleRetryFailed = () => {
   const failedSubsInfo = [...updateLog.value.failed].filter(s => s.error !== '已中止')
-  if (failedSubsInfo.length === 0) {
-    message.info('没有失败的订阅可以重试')
-    return
-  }
-  // The failed array now contains full subscription objects
-  executeSubscriptionUpdates(failedSubsInfo)
+  prepareAndShowUpdateModal(failedSubsInfo)
 }
 
 const handleCancelUpdate = () => {
@@ -777,9 +815,8 @@ const handleContextMenu = (group: import('@/stores/subscriptionGroups').Subscrip
 }
 
 const handleUpdateGroupSubscriptions = (groupId: string) => {
-  const subsToUpdate = subscriptions.value.filter(s => s.group_id === groupId && s.enabled)
-  // The generic function will handle the case where there are no subscriptions to update.
-  executeSubscriptionUpdates(subsToUpdate)
+  const subs = subscriptions.value.filter(s => s.group_id === groupId && s.enabled)
+  prepareAndShowUpdateModal(subs)
 }
 
 
@@ -984,6 +1021,17 @@ onMounted(() => {
   fetchSubscriptions()
   subscriptionGroupStore.fetchGroups()
   nodeGroupStore.fetchGroups()
+
+  // Load update settings from localStorage
+  const savedSettings = localStorage.getItem('subscriptionUpdateSettings')
+  if (savedSettings) {
+    Object.assign(updateSettings, JSON.parse(savedSettings))
+  }
+
+  // Watch for changes and save to localStorage
+  watch(updateSettings, (newSettings: typeof updateSettings) => {
+    localStorage.setItem('subscriptionUpdateSettings', JSON.stringify(newSettings))
+  })
 })
 </script>
 
@@ -1293,70 +1341,104 @@ onMounted(() => {
     <n-modal
       v-model:show="showUpdateLogModal"
       preset="card"
-      title="更新日志"
+      title="订阅更新"
       style="width: 600px;"
       :mask-closable="false"
     >
-      <div v-if="updateLogLoading" class="text-center mb-4">
-        <n-progress
-          type="line"
-          :percentage="updateProgress.total > 0 ? Math.floor((updateProgress.current / updateProgress.total) * 100) : 0"
-          :indicator-placement="'inside'"
-          processing
-        />
-        <p class="mt-2">正在更新: {{ updateProgress.current }} / {{ updateProgress.total }}</p>
+      <!-- Configuration Stage -->
+      <div v-if="updateStage === 'config'">
+        <n-form label-placement="left" label-width="auto">
+          <n-form-item label="待更新订阅数">
+            <n-statistic :value="subsToUpdate.length" />
+          </n-form-item>
+          <n-form-item label="并发数">
+            <n-input-number v-model:value="updateSettings.concurrency" :min="1" :max="20" />
+            <template #feedback>同时执行的网络请求数量。较高的值可以加快速度，但可能导致请求失败。</template>
+          </n-form-item>
+          <n-form-item label="失败重试次数">
+            <n-input-number v-model:value="updateSettings.retries" :min="0" :max="5" />
+            <template #feedback>每个订阅在更新失败后自动重试的次数。</template>
+          </n-form-item>
+          <n-form-item label="请求间隔 (ms)">
+            <n-input-number v-model:value="updateSettings.delay" :min="0" :step="100" />
+            <template #feedback>同一批次内，每个并发请求之间的间隔。有助于错开请求峰值。</template>
+          </n-form-item>
+          <n-form-item label="批次间隔 (ms)">
+            <n-input-number v-model:value="updateSettings.batchDelay" :min="0" :step="100" />
+            <template #feedback>每完成一个并发批次后，等待一段时间再开始下一个批次。</template>
+          </n-form-item>
+        </n-form>
       </div>
-      <n-collapse>
-        <n-collapse-item :title="`更新成功 (${updateLog.success.length})`" name="success">
-          <div style="max-height: 200px; overflow-y: auto;">
-            <n-tag v-for="sub in updateLog.success" :key="sub.name" type="success" class="m-1">
-              {{ sub.name }}
-            </n-tag>
-            <n-text v-if="updateLog.success.length === 0">没有订阅成功更新。</n-text>
-          </div>
-        </n-collapse-item>
-        <n-collapse-item :title="`更新失败 (${updateLog.failed.length})`" name="failed">
-           <div style="max-height: 200px; overflow-y: auto;">
-            <div v-if="updateLog.failed.length > 0">
-              <div v-for="sub in updateLog.failed" :key="sub.id" class="mb-2 p-2 border rounded">
-                 <div class="flex justify-between items-center">
-                   <n-tag type="error">{{ sub.name }}</n-tag>
-                   <n-space :size="4">
-                     <n-tag v-if="sub.remaining_traffic !== null && sub.remaining_traffic !== undefined" size="small" :type="sub.remaining_traffic === 0 ? 'error' : 'default'">
-                       流量: {{ formatBytes(sub.remaining_traffic) }}
-                     </n-tag>
-                      <n-tag v-if="sub.remaining_days !== null && sub.remaining_days !== undefined" size="small" :type="sub.remaining_days === 0 ? 'error' : 'default'">
-                       天数: {{ sub.remaining_days }} 天
-                     </n-tag>
-                   </n-space>
-                 </div>
-                 <n-text class="text-xs text-gray-500 mt-1 block">{{ sub.error }}</n-text>
-              </div>
+
+      <!-- Progress Stage -->
+      <div v-else>
+        <div class="text-center mb-4">
+          <n-progress
+            type="line"
+            :percentage="updateProgress.total > 0 ? Math.floor((updateProgress.current / updateProgress.total) * 100) : 0"
+            :indicator-placement="'inside'"
+            processing
+          />
+          <p class="mt-2">正在更新: {{ updateProgress.current }} / {{ updateProgress.total }}</p>
+        </div>
+        <n-collapse>
+          <n-collapse-item :title="`更新成功 (${updateLog.success.length})`" name="success">
+            <div style="max-height: 200px; overflow-y: auto;">
+              <n-tag v-for="sub in updateLog.success" :key="sub.name" type="success" class="m-1">
+                {{ sub.name }}
+              </n-tag>
+              <n-text v-if="updateLog.success.length === 0">没有订阅成功更新。</n-text>
             </div>
-            <n-text v-else>没有订阅更新失败。</n-text>
-          </div>
-        </n-collapse-item>
-      </n-collapse>
+          </n-collapse-item>
+          <n-collapse-item :title="`更新失败 (${updateLog.failed.length})`" name="failed">
+             <div style="max-height: 200px; overflow-y: auto;">
+              <div v-if="updateLog.failed.length > 0">
+                <div v-for="sub in updateLog.failed" :key="sub.id" class="mb-2 p-2 border rounded">
+                   <div class="flex justify-between items-center">
+                     <n-tag type="error">{{ sub.name }}</n-tag>
+                     <n-space :size="4">
+                       <n-tag v-if="sub.remaining_traffic !== null && sub.remaining_traffic !== undefined" size="small" :type="sub.remaining_traffic === 0 ? 'error' : 'default'">
+                         流量: {{ formatBytes(sub.remaining_traffic) }}
+                       </n-tag>
+                        <n-tag v-if="sub.remaining_days !== null && sub.remaining_days !== undefined" size="small" :type="sub.remaining_days === 0 ? 'error' : 'default'">
+                         天数: {{ sub.remaining_days }} 天
+                       </n-tag>
+                     </n-space>
+                   </div>
+                   <n-text class="text-xs text-gray-500 mt-1 block">{{ sub.error }}</n-text>
+                </div>
+              </div>
+              <n-text v-else>没有订阅更新失败。</n-text>
+            </div>
+          </n-collapse-item>
+        </n-collapse>
+      </div>
+
       <template #footer>
         <n-space justify="end">
-          <n-button @click="handleCancelUpdate">{{ updateLogLoading ? '中止' : '关闭' }}</n-button>
-          <n-button
-            type="primary"
-            ghost
-            @click="handleRetryFailed"
-            :disabled="updateLog.failed.filter(s => s.error !== '已中止').length === 0 || updateLogLoading"
-            :loading="updateLogLoading"
-          >
-            重试失败的订阅
-          </n-button>
-           <n-button
-            type="error"
-            ghost
-            @click="handleClearFailed"
-            :disabled="updateLog.failed.filter(s => s.error || s.remaining_traffic === 0 || (s.remaining_days !== null && s.remaining_days !== undefined && s.remaining_days <= 0)).length === 0 || updateLogLoading"
-          >
-            清除失效订阅
-          </n-button>
+          <div v-if="updateStage === 'config'">
+            <n-button @click="showUpdateLogModal = false">取消</n-button>
+            <n-button type="primary" @click="executeSubscriptionUpdates">开始更新</n-button>
+          </div>
+          <div v-else>
+            <n-button @click="handleCancelUpdate">{{ updateLogLoading ? '中止' : '关闭' }}</n-button>
+            <n-button
+              type="primary"
+              ghost
+              @click="handleRetryFailed"
+              :disabled="updateLog.failed.filter(s => s.error !== '已中止').length === 0 || updateLogLoading"
+            >
+              重试失败项
+            </n-button>
+             <n-button
+              type="error"
+              ghost
+              @click="handleClearFailed"
+              :disabled="updateLog.failed.filter(s => s.error || s.remaining_traffic === 0 || (s.remaining_days !== null && s.remaining_days !== undefined && s.remaining_days <= 0)).length === 0 || updateLogLoading"
+            >
+              清除失效订阅
+            </n-button>
+          </div>
         </n-space>
       </template>
     </n-modal>
