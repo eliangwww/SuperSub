@@ -66,7 +66,7 @@ const nodePreviewRef = ref<{ fetchPreview: () => void } | null>(null)
 const showUpdateLogModal = ref(false)
 const updateLog = ref<{
   success: { name: string }[]
-  failed: { id: string, name: string, error: string }[]
+  failed: Subscription[]
 }>({ success: [], failed: [] })
 const updateLogLoading = ref(false)
 const updateProgress = ref({ current: 0, total: 0 })
@@ -159,18 +159,6 @@ const formatBytes = (bytes: number, decimals = 2) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
-const parseSubscriptionInfo = (info: string | null | undefined) => {
-    if (!info) return {};
-    const data: Record<string, number> = {};
-    info.split(';').forEach(part => {
-        const [key, value] = part.split('=').map(s => s.trim());
-        if (key && value) {
-            const parsedValue = parseFloat(value);
-            data[key] = isNaN(parsedValue) ? 0 : parsedValue;
-        }
-    });
-    return data;
-};
 
 const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRules }: {
     onEdit: (row: Subscription) => void,
@@ -188,6 +176,14 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
       key: 'status',
       align: 'center',
       width: 100,
+      sorter: (a, b) => {
+        const getStatusValue = (row: Subscription) => {
+          if (row.error) return 2; // 失败
+          if (row.last_updated) return 1; // 成功
+          return 0; // 待更新
+        };
+        return getStatusValue(a) - getStatusValue(b);
+      },
       render(row) {
         if (row.error) {
           return h(NTooltip, null, {
@@ -216,45 +212,55 @@ const createColumns = ({ onEdit, onUpdate, onDelete, onPreviewNodes, onManageRul
       title: '剩余流量',
       key: 'subscription_info',
       width: 120,
+      sorter: (a, b) => {
+        const valA = a.remaining_traffic;
+        const valB = b.remaining_traffic;
+        if (valA === null || valA === undefined) return 1;
+        if (valB === null || valB === undefined) return -1;
+        return valA - valB;
+      },
       render(row) {
-        if (!row.subscription_info) return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
-        const info = parseSubscriptionInfo(row.subscription_info);
-        const used = (info.upload || 0) + (info.download || 0);
-        const total = info.total || 0;
-        const remaining = total - used;
-        
-        if (total === 0 || remaining < 0) {
-            return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
+        const remaining = row.remaining_traffic;
+        if (remaining === null || remaining === undefined || remaining < 0) {
+          return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
         }
-        const usagePercentage = used / total;
+        
+        // Since we don't have total/used, we can't show a percentage-based color.
+        // We can, however, create a simple color scheme based on remaining data.
         let tagType: 'success' | 'warning' | 'error' = 'success';
-        if (usagePercentage > 0.9) tagType = 'error';
-        else if (usagePercentage > 0.7) tagType = 'warning';
-        const tooltipContent = `总流量: ${formatBytes(total)}\n已用(U/D): ${formatBytes(info.upload || 0)} / ${formatBytes(info.download || 0)}`;
-        return h(NTooltip, null, {
-          trigger: () => h(NTag, { type: tagType, size: 'small', round: true }, { default: () => formatBytes(remaining) }),
-          default: () => h('pre', { style: 'white-space: pre-wrap;' }, tooltipContent),
-        });
+        const GB = 1024 * 1024 * 1024;
+        if (remaining < 1 * GB) tagType = 'error';
+        else if (remaining < 5 * GB) tagType = 'warning';
+
+        return h(NTag, { type: tagType, size: 'small', round: true }, { default: () => formatBytes(remaining) });
       }
     },
     {
       title: '剩余天数',
-      key: 'expires_at',
+      key: 'remaining_days',
       width: 120,
-      sorter: (a, b) => new Date(a.expires_at || 0).getTime() - new Date(b.expires_at || 0).getTime(),
+      sorter: (a, b) => {
+        const valA = a.remaining_days;
+        const valB = b.remaining_days;
+        if (valA === null || valA === undefined) return 1;
+        if (valB === null || valB === undefined) return -1;
+        return valA - valB;
+      },
       render(row) {
-        if (!row.expires_at) return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
-        const now = new Date();
-        const expiry = new Date(row.expires_at);
-        const diffTime = expiry.getTime() - now.getTime();
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        const diffDays = row.remaining_days;
+        if (diffDays === null || diffDays === undefined) {
+            return h(NTag, { size: 'small', round: true }, { default: () => 'N/A' });
+        }
         if (diffDays < 0) {
             return h(NTag, { type: 'error', size: 'small', round: true }, { default: () => '已过期' });
         }
+        
         let tagType: 'success' | 'warning' | 'error' = 'success';
         if (diffDays <= 3) tagType = 'error';
         else if (diffDays <= 7) tagType = 'warning';
-        const tooltipContent = `到期时间: ${format(expiry, 'yyyy-MM-dd HH:mm')}`;
+        
+        const tooltipContent = row.expires_at ? `到期时间: ${format(new Date(row.expires_at), 'yyyy-MM-dd HH:mm')}` : '无到期时间信息';
+
         return h(NTooltip, null, {
           trigger: () => h(NTag, { type: tagType, size: 'small', round: true }, { default: () => `${diffDays} 天` }),
           default: () => tooltipContent,
@@ -376,7 +382,7 @@ const handleDelete = (row: Subscription) => {
   })
 }
 
-const handleUpdate = async (row: Subscription, silent = false, signal?: AbortSignal): Promise<{ success: boolean; name: string; id: string; error?: string }> => {
+const handleUpdate = async (row: Subscription, silent = false, signal?: AbortSignal): Promise<{ success: boolean; data: Subscription; error?: string }> => {
   updatingId.value = row.id
   updatingIds.value.add(row.id)
   if (!silent) {
@@ -384,26 +390,29 @@ const handleUpdate = async (row: Subscription, silent = false, signal?: AbortSig
   }
   try {
     const response = await api.post<ApiResponse<Subscription>>(`/subscriptions/${row.id}/update`, {}, { signal })
+    const updatedSub = response.data.data
+    
     const index = subscriptions.value.findIndex(s => s.id === row.id)
-    if (index !== -1 && response.data.data) {
-      subscriptions.value[index] = response.data.data
+    if (index !== -1 && updatedSub) {
+      subscriptions.value[index] = updatedSub
     }
 
-    if (response.data.success) {
+    if (response.data.success && updatedSub) {
       if (!silent) message.success(`订阅 [${row.name}] 更新成功`)
-      return { success: true, name: row.name, id: row.id }
+      return { success: true, data: updatedSub }
     } else {
       const errorMsg = response.data.message || `订阅 [${row.name}] 更新失败`
       if (!silent) message.error(errorMsg)
-      return { success: false, name: row.name, id: row.id, error: errorMsg }
+      // Even on failure, the backend returns the subscription state, so we use it.
+      return { success: false, data: updatedSub || row, error: errorMsg }
     }
   } catch (err: any) {
     if (err.name === 'AbortError') {
-      return { success: false, name: row.name, id: row.id, error: '已中止' }
+      return { success: false, data: row, error: '已中止' }
     }
     const errorMsg = err.message || '请求失败，请稍后重试'
     if (!silent) message.error(errorMsg)
-    return { success: false, name: row.name, id: row.id, error: errorMsg }
+    return { success: false, data: row, error: errorMsg }
   } finally {
     updatingId.value = null
     updatingIds.value.delete(row.id)
@@ -451,17 +460,17 @@ const executeSubscriptionUpdates = async (subsToUpdate: Subscription[]) => {
       if (signal.aborted) {
         // Mark remaining tasks as aborted in the log
         subsToUpdate.slice(index).forEach(sub => {
-          updateLog.value.failed.push({ id: sub.id, name: sub.name, error: '已中止' })
+          updateLog.value.failed.push({ ...sub, error: '已中止' })
         })
         break
       }
       const p = task().then(result => {
         updateProgress.value.current++
         if (result.success) {
-          updateLog.value.success.push({ name: result.name })
+          updateLog.value.success.push({ name: result.data.name })
         } else {
-          // Aborted tasks are also treated as failed here
-          updateLog.value.failed.push({ id: result.id, name: result.name, error: result.error || '未知错误' })
+          const failedSub = { ...result.data, error: result.error || '未知错误' }
+          updateLog.value.failed.push(failedSub)
         }
       })
       executing.add(p)
@@ -500,8 +509,8 @@ const handleRetryFailed = () => {
     message.info('没有失败的订阅可以重试')
     return
   }
-  const subsToRetry = subscriptions.value.filter(s => failedSubsInfo.some(fs => fs.id === s.id))
-  executeSubscriptionUpdates(subsToRetry)
+  // The failed array now contains full subscription objects
+  executeSubscriptionUpdates(failedSubsInfo)
 }
 
 const handleCancelUpdate = () => {
@@ -511,6 +520,44 @@ const handleCancelUpdate = () => {
     showUpdateLogModal.value = false
   }
 }
+
+const handleClearFailed = () => {
+  const subsToClear = updateLog.value.failed.filter(sub =>
+    sub.error !== '已中止' && (
+      sub.error || // Condition 1: Has an error (failed update)
+      sub.remaining_traffic === 0 || // Condition 2: Remaining traffic is exactly 0
+      (sub.remaining_days !== null && sub.remaining_days !== undefined && sub.remaining_days <= 0) // Condition 3: Remaining days is 0 or less
+    )
+  );
+
+  if (subsToClear.length === 0) {
+    message.info('没有符合条件的失效订阅可以清除');
+    return;
+  }
+
+  dialog.warning({
+    title: '确认清除失效订阅',
+    content: `即将删除 ${subsToClear.length} 个失效订阅，此操作不可恢复。确定要继续吗？`,
+    positiveText: '确定清除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      const idsToClear = subsToClear.map(sub => sub.id);
+      try {
+        const response = await api.post('/subscriptions/batch-delete', { ids: idsToClear });
+        if (response.data.success) {
+          message.success(`成功清除了 ${idsToClear.length} 个失效订阅`);
+          // Remove cleared subs from the log
+          updateLog.value.failed = updateLog.value.failed.filter(sub => !idsToClear.includes(sub.id));
+          fetchSubscriptions(); // Refresh the main list
+        } else {
+          message.error(response.data.message || '清除失败');
+        }
+      } catch (err) {
+        message.error('请求失败，请稍后重试');
+      }
+    }
+  });
+};
 
 const handleBulkImport = async () => {
   if (!importUrls.value.trim()) {
@@ -1271,9 +1318,19 @@ onMounted(() => {
         <n-collapse-item :title="`更新失败 (${updateLog.failed.length})`" name="failed">
            <div style="max-height: 200px; overflow-y: auto;">
             <div v-if="updateLog.failed.length > 0">
-              <div v-for="sub in updateLog.failed" :key="sub.id" class="mb-2 p-1">
-                <n-tag type="error" class="mr-2">{{ sub.name }}</n-tag>
-                <n-text class="text-xs text-gray-500">{{ sub.error }}</n-text>
+              <div v-for="sub in updateLog.failed" :key="sub.id" class="mb-2 p-2 border rounded">
+                 <div class="flex justify-between items-center">
+                   <n-tag type="error">{{ sub.name }}</n-tag>
+                   <n-space :size="4">
+                     <n-tag v-if="sub.remaining_traffic !== null && sub.remaining_traffic !== undefined" size="small" :type="sub.remaining_traffic === 0 ? 'error' : 'default'">
+                       流量: {{ formatBytes(sub.remaining_traffic) }}
+                     </n-tag>
+                      <n-tag v-if="sub.remaining_days !== null && sub.remaining_days !== undefined" size="small" :type="sub.remaining_days === 0 ? 'error' : 'default'">
+                       天数: {{ sub.remaining_days }} 天
+                     </n-tag>
+                   </n-space>
+                 </div>
+                 <n-text class="text-xs text-gray-500 mt-1 block">{{ sub.error }}</n-text>
               </div>
             </div>
             <n-text v-else>没有订阅更新失败。</n-text>
@@ -1291,6 +1348,14 @@ onMounted(() => {
             :loading="updateLogLoading"
           >
             重试失败的订阅
+          </n-button>
+           <n-button
+            type="error"
+            ghost
+            @click="handleClearFailed"
+            :disabled="updateLog.failed.filter(s => s.error || s.remaining_traffic === 0 || (s.remaining_days !== null && s.remaining_days !== undefined && s.remaining_days <= 0)).length === 0 || updateLogLoading"
+          >
+            清除失效订阅
           </n-button>
         </n-space>
       </template>

@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   expires_at DATETIME,
   subscription_info TEXT,
   group_id TEXT,
+  remaining_traffic BIGINT,
+  remaining_days INT,
   FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
   FOREIGN KEY (group_id) REFERENCES subscription_groups (id) ON DELETE SET NULL
 );

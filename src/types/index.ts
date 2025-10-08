@@ -27,6 +27,8 @@ export interface Subscription {
   error?: string | null;
   expires_at?: string | null;
   subscription_info?: string | null;
+  remaining_traffic?: number | null;
+  remaining_days?: number | null;
 }
 
 export interface Node {
