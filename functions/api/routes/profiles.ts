@@ -16,8 +16,15 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
     let allNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; isManual?: boolean; group_name?: string; })[] = [];
 
     if (content.subscription_ids && content.subscription_ids.length > 0) {
-        const subPlaceholders = content.subscription_ids.map(() => '?').join(',');
-        let { results: subscriptions } = await env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
+        const batchSize = 50; // Set a batch size to avoid hitting SQL variable limits
+        let subscriptions: { id: string; name: string; url: string; }[] = [];
+
+        for (let i = 0; i < content.subscription_ids.length; i += batchSize) {
+            const batch = content.subscription_ids.slice(i, i + batchSize);
+            const subPlaceholders = batch.map(() => '?').join(',');
+            const { results: batchResults } = await env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...batch, userId).all<{ id: string; name: string; url: string; }>();
+            subscriptions = subscriptions.concat(batchResults);
+        }
 
         const airportOptions = content.airport_subscription_options || {};
         const timeout = airportOptions.timeout || 10; // Default to 10 seconds
@@ -99,20 +106,25 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                     }
                 }
             } else {
-                // Default behavior: fetch all subscriptions
-                const results = await Promise.all(activeSubscriptions.map(sub => fetchSubscriptionContent(sub.url, timeout)));
-                results.forEach((result, index) => {
-                    if (result.success) {
-                        const sub = activeSubscriptions[index];
-                        let nodes = parseSubscriptionContent(result.content);
-                        // Apply rules for each subscription individually
-                        // This part might need adjustment based on desired rule application logic for multiple subs
-                        const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
-                        allNodes.push(...nodesWithSubName);
+                // Smart Fetch: Iterate through subscriptions sequentially and stop at the first success.
+                let found = false;
+                for (const sub of activeSubscriptions) {
+                    const result = await fetchSubscriptionContent(sub.url, timeout);
+                    if (result.success && result.content) {
+                        nodesSourceSub = sub;
+                        subContent = result.content;
+                        found = true;
+                        // On first success, break the loop
+                        break; 
                     } else {
-                        console.error(`Failed to fetch subscription ${activeSubscriptions[index].id}: ${result.error}`);
+                        if ('error' in result) {
+                            console.error(`Failed to fetch subscription ${sub.id}: ${result.error}`);
+                        }
                     }
-                });
+                }
+                if (!found) {
+                    console.warn(`All subscriptions failed for profile ${profile.id}.`);
+                }
             }
         }
 
@@ -128,15 +140,22 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
     }
 
     if (content.node_ids && content.node_ids.length > 0) {
-        const nodePlaceholders = content.node_ids.map(() => '?').join(',');
-        const manualNodesQuery = `
-            SELECT n.*, g.name as group_name
-            FROM nodes n
-            LEFT JOIN node_groups g ON n.group_id = g.id
-            WHERE n.id IN (${nodePlaceholders}) AND n.user_id = ?
-        `;
-        const { results: manualNodes } = await env.DB.prepare(manualNodesQuery).bind(...content.node_ids, userId).all<any>();
+        const batchSize = 50; // Set a batch size to avoid hitting SQL variable limits
+        let manualNodes: any[] = [];
         
+        for (let i = 0; i < content.node_ids.length; i += batchSize) {
+            const batch = content.node_ids.slice(i, i + batchSize);
+            const nodePlaceholders = batch.map(() => '?').join(',');
+            const manualNodesQuery = `
+                SELECT n.*, g.name as group_name
+                FROM nodes n
+                LEFT JOIN node_groups g ON n.group_id = g.id
+                WHERE n.id IN (${nodePlaceholders}) AND n.user_id = ?
+            `;
+            const { results: batchResults } = await env.DB.prepare(manualNodesQuery).bind(...batch, userId).all<any>();
+            manualNodes = manualNodes.concat(batchResults);
+        }
+
         const parsedManualNodes = manualNodes.map((n: any) => ({
             id: n.id,
             name: n.name,
