@@ -196,7 +196,7 @@ const genericUrlParser = (link: string, protocol: 'ss' | 'trojan' | 'vless' | 't
 
     try {
         const url = new URL(link);
-        const name = decodeURIComponent(url.hash.substring(1)) || url.hostname;
+        const name = decodeURIComponent(url.hash.substring(1)) || url.searchParams.get('name') || url.hostname;
         const server = url.hostname;
         const port = Number(url.port);
         let password = url.username;
