@@ -17,12 +17,16 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
 
     if (content.subscription_ids && content.subscription_ids.length > 0) {
         const batchSize = 50; // Set a batch size to avoid hitting SQL variable limits
-        let subscriptions: { id: string; name: string; url: string; }[] = [];
+        let subscriptions: { id: string; name: string; url: string; group_id: string | null }[] = [];
 
         for (let i = 0; i < content.subscription_ids.length; i += batchSize) {
             const batch = content.subscription_ids.slice(i, i + batchSize);
             const subPlaceholders = batch.map(() => '?').join(',');
-            const { results: batchResults } = await env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...batch, userId).all<{ id: string; name: string; url: string; }>();
+            const { results: batchResults } = await env.DB.prepare(`
+                SELECT s.id, s.name, s.url, s.group_id
+                FROM subscriptions s
+                WHERE s.id IN (${subPlaceholders}) AND s.user_id = ?
+            `).bind(...batch, userId).all<{ id: string; name: string; url: string; group_id: string | null }>();
             subscriptions = subscriptions.concat(batchResults);
         }
 
@@ -44,7 +48,66 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                 }
             } else if (airportOptions.polling) {
                 const mode = airportOptions.polling_mode || 'hourly';
-                if (mode === 'request') {
+
+                if (mode === 'group_request') {
+                    const groupedSubs: Record<string, any[]> = {};
+                    for (const sub of activeSubscriptions) {
+                        const groupId = sub.group_id || 'ungrouped';
+                        if (!groupedSubs[groupId]) {
+                            groupedSubs[groupId] = [];
+                        }
+                        groupedSubs[groupId].push(sub);
+                    }
+                
+                    const groupPollingState = JSON.parse(profile.group_polling_indices || '{}');
+                
+                    const pollingPromises = Object.entries(groupedSubs).map(async ([groupId, subsInGroup]) => {
+                        const startIndex = groupPollingState[groupId] || 0;
+                
+                        for (let i = 0; i < subsInGroup.length; i++) {
+                            const currentIndex = (startIndex + i) % subsInGroup.length;
+                            const currentSub = subsInGroup[currentIndex];
+                            const result = await fetchSubscriptionContent(currentSub.url, timeout);
+                
+                            if (result.success && result.content) {
+                                if (!isDryRun) {
+                                    const nextIndex = (currentIndex + 1) % subsInGroup.length;
+                                    groupPollingState[groupId] = nextIndex;
+                                }
+                                return { sub: currentSub, content: result.content };
+                            }
+                        }
+                        return null; // No successful subscription in this group
+                    });
+                
+                    const successfulPolls = (await Promise.all(pollingPromises)).filter(p => p !== null);
+                
+                    if (successfulPolls.length > 0) {
+                        const allPolledNodes: (ParsedNode & { id: string; raw: string; subscriptionName?: string; })[] = [];
+                        for (const poll of successfulPolls) {
+                            if (poll) {
+                                let nodes = parseSubscriptionContent(poll.content);
+                                const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(poll.sub.id, userId).all();
+                                if (rules && rules.length > 0) {
+                                    nodes = applySubscriptionRules(nodes, rules);
+                                }
+                                allPolledNodes.push(...nodes.map(node => ({ ...node, subscriptionName: poll.sub.name })));
+                            }
+                        }
+                        allNodes.push(...allPolledNodes);
+                
+                        if (!isDryRun) {
+                             executionCtx.waitUntil(
+                                env.DB.prepare(
+                                    `UPDATE profiles SET group_polling_indices = ? WHERE id = ?`
+                                ).bind(JSON.stringify(groupPollingState), profile.id).run()
+                            );
+                        }
+                    }
+                     subContent = null;
+                     nodesSourceSub = null;
+                
+                } else if (mode === 'request') {
                     const startIndex = profile.polling_index || 0;
                     let found = false;
                     for (let i = 0; i < activeSubscriptions.length; i++) {
@@ -105,6 +168,32 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                         subContent = result.content;
                     }
                 }
+            } else if (airportOptions.use_all) {
+                // Use All: Iterate through all subscriptions and combine their nodes.
+                const promises = activeSubscriptions.map(async (sub) => {
+                    const result = await fetchSubscriptionContent(sub.url, timeout);
+                    if (result.success && result.content) {
+                        let nodes = parseSubscriptionContent(result.content);
+                        const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
+                        if (rules && rules.length > 0) {
+                            nodes = applySubscriptionRules(nodes, rules);
+                        }
+                        return nodes.map(node => ({ ...node, subscriptionName: sub.name }));
+                    } else {
+                        if ('error' in result) {
+                            console.error(`Failed to fetch subscription ${sub.id} in 'use_all' mode: ${result.error}`);
+                        }
+                        return []; // Return an empty array for failed fetches
+                    }
+                });
+            
+                const nodeArrays = await Promise.all(promises);
+                for (const nodeArray of nodeArrays) {
+                    allNodes.push(...nodeArray);
+                }
+                // Clear these to prevent the block below from running
+                subContent = null;
+                nodesSourceSub = null;
             } else {
                 // Smart Fetch: Iterate through subscriptions sequentially and stop at the first success.
                 let found = false;
@@ -115,7 +204,7 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
                         subContent = result.content;
                         found = true;
                         // On first success, break the loop
-                        break; 
+                        break;
                     } else {
                         if ('error' in result) {
                             console.error(`Failed to fetch subscription ${sub.id}: ${result.error}`);

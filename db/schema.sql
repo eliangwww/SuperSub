@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   last_successful_subscription_id TEXT,
   last_successful_subscription_content TEXT,
   last_successful_subscription_updated_at TEXT,
+  group_polling_indices TEXT,
   FOREIGN KEY (user_id) REFERENCES users (id),
   FOREIGN KEY (subconverter_backend_id) REFERENCES subconverter_assets (id),
   FOREIGN KEY (subconverter_config_id) REFERENCES subconverter_assets (id),
