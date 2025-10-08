@@ -56,6 +56,23 @@ const dropdownX = ref(0)
 const dropdownY = ref(0)
 const activeDropdownGroup = ref<import('@/stores/subscriptionGroups').SubscriptionGroup | null>(null)
 
+// For Export Group Modal
+const showExportModal = ref(false)
+const exportData = reactive({
+  urls: '',
+  count: 0,
+  groupName: ''
+})
+
+// For Batch Replace Modal
+const showBatchReplaceModal = ref(false)
+const batchReplaceData = reactive({
+  find: '',
+  replace: '',
+  groupId: '',
+  count: 0,
+  loading: false,
+})
 
 // For Node Preview in Modal
 const showNodePreviewModal = ref(false)
@@ -740,9 +757,13 @@ const handleUpdateGroup = async () => {
 const getDropdownOptions = (group: import('@/stores/subscriptionGroups').SubscriptionGroup): DropdownOption[] => {
   return [
     { label: '更新本组', key: 'update-group' },
+    { label: '一键去重', key: 'deduplicate-group' },
+    { label: '导出订阅', key: 'export-group' },
+    { type: 'divider', key: 'd1' },
+    { label: '批量替换', key: 'batch-replace-group' },
     { label: '重命名', key: 'rename' },
     { label: group.is_enabled ? '禁用' : '启用', key: 'toggle' },
-    { type: 'divider', key: 'd1' },
+    { type: 'divider', key: 'd2' },
     { label: '删除', key: 'delete', props: { style: 'color: red;' } }
   ]
 }
@@ -755,6 +776,15 @@ const handleGroupAction = (key: string) => {
   switch (key) {
     case 'update-group':
       handleUpdateGroupSubscriptions(group.id)
+      break
+    case 'deduplicate-group':
+      handleDeduplicateGroup(group.id)
+      break
+    case 'export-group':
+      handleExportGroup(group.id)
+      break
+    case 'batch-replace-group':
+      openBatchReplaceModal(group.id)
       break
     case 'rename':
       editingGroup.value = group
@@ -817,6 +847,139 @@ const handleContextMenu = (group: import('@/stores/subscriptionGroups').Subscrip
 const handleUpdateGroupSubscriptions = (groupId: string) => {
   const subs = subscriptions.value.filter(s => s.group_id === groupId && s.enabled)
   prepareAndShowUpdateModal(subs)
+}
+
+const handleDeduplicateGroup = (groupId: string) => {
+  const subsInGroup = subscriptions.value.filter(s => s.group_id === groupId)
+  const urlMap = new Map<string, Subscription[]>()
+
+  subsInGroup.forEach(sub => {
+    const existing = urlMap.get(sub.url)
+    if (existing) {
+      existing.push(sub)
+    } else {
+      urlMap.set(sub.url, [sub])
+    }
+  })
+
+  const idsToDelete: string[] = []
+  urlMap.forEach(subs => {
+    if (subs.length > 1) {
+      // Keep the first one, delete the rest
+      subs.slice(1).forEach(sub => idsToDelete.push(sub.id))
+    }
+  })
+
+  if (idsToDelete.length === 0) {
+    message.info('该分组内没有发现重复的订阅链接。')
+    return
+  }
+
+  dialog.warning({
+    title: '确认去重',
+    content: `发现 ${idsToDelete.length} 个重复的订阅链接，确定要删除它们吗？`,
+    positiveText: '确定删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const response = await api.post('/subscriptions/batch-delete', { ids: idsToDelete })
+        if (response.data.success) {
+          message.success(`成功删除了 ${idsToDelete.length} 个重复订阅。`)
+          fetchSubscriptions()
+        } else {
+          message.error(response.data.message || '去重失败')
+        }
+      } catch (err) {
+        message.error('请求失败，请稍后重试')
+      }
+    }
+  })
+}
+
+const handleExportGroup = (groupId: string) => {
+  const group = subscriptionGroupStore.groups.find(g => g.id === groupId)
+  const subsInGroup = subscriptions.value.filter(s => s.group_id === groupId)
+  if (subsInGroup.length === 0) {
+    message.warning('该分组下没有订阅可导出。')
+    return
+  }
+
+  exportData.urls = subsInGroup.map(s => s.url).join('\n')
+  exportData.count = subsInGroup.length
+  exportData.groupName = group?.name || '该分组'
+  showExportModal.value = true
+}
+
+const handleCopyExportUrls = () => {
+  if (!exportData.urls) {
+    message.warning('没有内容可复制。')
+    return
+  }
+  navigator.clipboard.writeText(exportData.urls).then(() => {
+    message.success('已成功复制到剪贴板！')
+  }).catch(err => {
+    message.error('复制失败，您的浏览器可能不支持或未授权。')
+    console.error('Clipboard write failed:', err)
+  })
+}
+
+
+const openBatchReplaceModal = (groupId: string) => {
+  const subsInGroup = subscriptions.value.filter(s => s.group_id === groupId)
+  if (subsInGroup.length === 0) {
+    message.warning('该分组下没有订阅可进行批量替换。')
+    return
+  }
+  batchReplaceData.find = ''
+  batchReplaceData.replace = ''
+  batchReplaceData.groupId = groupId
+  batchReplaceData.count = subsInGroup.length
+  batchReplaceData.loading = false
+  showBatchReplaceModal.value = true
+}
+
+const handleBatchReplace = async () => {
+  if (!batchReplaceData.find) {
+    message.warning('“查找”内容不能为空。')
+    return
+  }
+  if (batchReplaceData.groupId === '') {
+    message.error('未指定分组，操作中止。')
+    return
+  }
+
+  batchReplaceData.loading = true
+  const subsToUpdate = subscriptions.value.filter(s => s.group_id === batchReplaceData.groupId)
+  
+  const updates = subsToUpdate.map(sub => ({
+    id: sub.id,
+    url: sub.url.replaceAll(batchReplaceData.find, batchReplaceData.replace)
+  })).filter(update => {
+    const originalSub = subsToUpdate.find(s => s.id === update.id)
+    return originalSub && originalSub.url !== update.url
+  })
+
+  if (updates.length === 0) {
+    message.info('没有找到任何需要更新的订阅链接。')
+    batchReplaceData.loading = false
+    showBatchReplaceModal.value = false
+    return
+  }
+
+  try {
+    const response = await api.post('/subscriptions/batch-update-urls', { updates })
+    if (response.data.success) {
+      message.success(`成功更新了 ${updates.length} 个订阅链接。`)
+      fetchSubscriptions()
+      showBatchReplaceModal.value = false
+    } else {
+      message.error(response.data.message || '批量替换失败')
+    }
+  } catch (err) {
+    message.error('请求失败，请稍后重试')
+  } finally {
+    batchReplaceData.loading = false
+  }
 }
 
 
@@ -1444,6 +1607,54 @@ onMounted(() => {
     </n-modal>
 
   </div>
+
+    <n-modal
+      v-model:show="showExportModal"
+      preset="card"
+      :title="`导出分组 '${exportData.groupName}' 的订阅`"
+      style="width: 600px;"
+      :mask-closable="false"
+    >
+      <p class="mb-2">共 {{ exportData.count }} 个订阅链接：</p>
+      <n-input
+        v-model:value="exportData.urls"
+        type="textarea"
+        readonly
+        :autosize="{ minRows: 10, maxRows: 20 }"
+        placeholder="没有订阅链接"
+      />
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showExportModal = false">关闭</n-button>
+          <n-button type="primary" @click="handleCopyExportUrls">复制</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <n-modal
+      v-model:show="showBatchReplaceModal"
+      preset="card"
+      title="批量替换订阅链接"
+      style="width: 600px;"
+      :mask-closable="false"
+    >
+      <p class="mb-4">将对该分组下的 <b>{{ batchReplaceData.count }}</b> 个订阅链接执行替换操作。</p>
+      <n-form>
+        <n-form-item label="查找内容">
+          <n-input v-model:value="batchReplaceData.find" placeholder="例如，旧的域名或参数" />
+        </n-form-item>
+        <n-form-item label="替换为">
+          <n-input v-model:value="batchReplaceData.replace" placeholder="例如，新的域名或参数（可留空）" />
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showBatchReplaceModal = false">取消</n-button>
+          <n-button type="primary" @click="handleBatchReplace" :loading="batchReplaceData.loading">确认替换</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
 </template>
 
 <style scoped>

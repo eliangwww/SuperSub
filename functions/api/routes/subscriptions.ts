@@ -638,4 +638,24 @@ subscriptions.post('/batch-update-group', async (c) => {
     return c.json({ success: true, message: 'Subscriptions moved successfully.' });
 });
 
+subscriptions.post('/batch-update-urls', async (c) => {
+    const user = c.get('jwtPayload');
+    const { updates } = await c.req.json<{ updates: { id: string, url: string }[] }>();
+
+    if (!Array.isArray(updates) || updates.length === 0) {
+        return c.json({ success: false, message: 'No updates provided' }, 400);
+    }
+
+    const now = new Date().toISOString();
+    const stmts = updates.map(update => {
+        return c.env.DB.prepare(
+            `UPDATE subscriptions SET url = ?, updated_at = ? WHERE id = ? AND user_id = ?`
+        ).bind(update.url, now, update.id, user.id);
+    });
+
+    await c.env.DB.batch(stmts);
+
+    return c.json({ success: true, message: `Successfully updated ${updates.length} subscriptions.` });
+});
+
 export default subscriptions;
