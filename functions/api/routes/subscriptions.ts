@@ -144,17 +144,23 @@ export const applySubscriptionRules = (nodes: (ParsedNode & { id: string; raw: s
 // Helper to convert size string (e.g., "10.5 GB") to bytes
 const sizeToBytes = (sizeStr: string): number => {
     if (!sizeStr) return 0;
-    const match = sizeStr.match(/([\d.]+)\s*(TB|GB|MB|KB|T|G|M|K)?/i);
-    if (!match) return 0;
+    
+    // Clean the string: remove '+' and trim whitespace.
+    const cleanedStr = sizeStr.replace(/\+/g, ' ').trim();
+    
+    const match = cleanedStr.match(/^([\d.]+)\s*(T|G|M|K)?B?$/i);
+    if (!match) {
+        return 0;
+    }
 
     const size = parseFloat(match[1]);
     const unit = (match[2] || '').toUpperCase();
 
     switch (unit) {
-        case 'TB': case 'T': return size * Math.pow(1024, 4);
-        case 'GB': case 'G': return size * Math.pow(1024, 3);
-        case 'MB': case 'M': return size * Math.pow(1024, 2);
-        case 'KB': case 'K': return size * 1024;
+        case 'T': return size * Math.pow(1024, 4);
+        case 'G': return size * Math.pow(1024, 3);
+        case 'M': return size * Math.pow(1024, 2);
+        case 'K': return size * 1024;
         default: return size;
     }
 };
@@ -162,7 +168,7 @@ const sizeToBytes = (sizeStr: string): number => {
 // New, more robust parser for subscription details
 const parseSubscriptionDetails = (
     userInfoHeader: string | null,
-    nodeNames: string[]
+    nodes: (ParsedNode & { id: string, raw: string })[]
 ): { remainingTraffic: number | null; remainingDays: number | null; expiresAt: string | null } => {
     let remainingTraffic: number | null = null;
     let expiresAt: Date | null = null;
@@ -187,44 +193,50 @@ const parseSubscriptionDetails = (
         }
     }
 
-    // 2. Parse from node names (fallback/override method)
-    const text = nodeNames.join(' ');
-    
-    // Regex for various "remaining traffic" formats
-    const remainingTrafficMatch = text.match(/(?:剩余流量|剩余|流量)[\:：\s]*([\d.]+\s*[TGMK]?B)/i);
-    if (remainingTrafficMatch && remainingTrafficMatch[1]) {
-        remainingTraffic = sizeToBytes(remainingTrafficMatch[1]);
-    } else {
-        // Fallback for cases like "剩余流量: 0" (no unit)
-        // Fallback for cases like "剩余流量: 0" (no unit)
-        const remainingTrafficNoUnitMatch = text.match(/(?:剩余流量|剩余|流量)[\:：\s]*(\d+(?:\.\d+)?)/i);
-        if (remainingTrafficNoUnitMatch && remainingTrafficNoUnitMatch[1] && typeof remainingTrafficNoUnitMatch.index === 'number') {
-            const parsedValue = parseFloat(remainingTrafficNoUnitMatch[1]);
-            // Check if there's a unit nearby. If not, we can assume it's a raw value.
-            const startIndex = remainingTrafficNoUnitMatch.index;
-            const context = text.substring(startIndex, startIndex + remainingTrafficNoUnitMatch[0].length + 5);
-            if (!/[TGMK]B/i.test(context)) {
-                 remainingTraffic = parsedValue; // Assign the value directly
+    // 2. Parse from node names
+    // First pass for expiry date
+    for (const node of nodes) {
+        if (expiresAt) {
+            break;
+        }
+        const name = node.name;
+        const expiryDateMatch = name.match(/(?:到期|套餐到期)[\:：\s]*(\d{4}-\d{2}-\d{2})/i);
+        if (expiryDateMatch && expiryDateMatch[1]) {
+            const date = new Date(expiryDateMatch[1]);
+            if (!isNaN(date.getTime())) {
+                expiresAt = date;
+            }
+        } else {
+            const remainingDaysMatch = name.match(/(?:距离下次重置剩余|剩余天数|剩余|可用)[\:：\s]*(\d+)\s*天/i);
+            if (remainingDaysMatch && remainingDaysMatch[1]) {
+                const days = parseInt(remainingDaysMatch[1], 10);
+                if (!isNaN(days)) {
+                    const newExpiry = new Date();
+                    newExpiry.setDate(newExpiry.getDate() + days);
+                    expiresAt = newExpiry;
+                }
             }
         }
     }
 
-    // Regex for various expiry formats
-    const expiryDateMatch = text.match(/(?:到期|套餐到期)[\:：\s]*(\d{4}-\d{2}-\d{2})/i);
-    if (expiryDateMatch && expiryDateMatch[1]) {
-        const date = new Date(expiryDateMatch[1]);
-        if (!isNaN(date.getTime())) {
-            expiresAt = date;
+    // Second pass for traffic
+    for (const node of nodes) {
+        if (remainingTraffic) {
+            break;
         }
-    } else {
-        const remainingDaysMatch = text.match(/(?:剩余|可用|距离下次重置剩余)[\:：\s]*(\d+)\s*天/i);
-        if (remainingDaysMatch && remainingDaysMatch[1]) {
-            const days = parseInt(remainingDaysMatch[1], 10);
-            if (!isNaN(days)) {
-                const newExpiry = new Date();
-                newExpiry.setDate(newExpiry.getDate() + days);
-                expiresAt = newExpiry;
-            }
+        const name = node.name;
+
+        if (/天/i.test(name)) {
+            continue;
+        }
+
+        const regex = /(?:剩余流量)[\:：\s]*([\d.]+[\s+]*[TGMK]?B)/i;
+        const remainingTrafficMatch = name.match(regex);
+
+        if (remainingTrafficMatch && remainingTrafficMatch[1]) {
+            const matchedString = remainingTrafficMatch[1];
+            const bytes = sizeToBytes(matchedString);
+            remainingTraffic = bytes;
         }
     }
 
@@ -240,11 +252,12 @@ const parseSubscriptionDetails = (
         remainingDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     }
 
-    return {
+    const result = {
         remainingTraffic: remainingTraffic,
         remainingDays: remainingDays,
         expiresAt: expiresAt ? expiresAt.toISOString() : null,
     };
+    return result;
 };
 
 
@@ -352,7 +365,7 @@ const updateSingleSubscription = async (db: D1Database, sub: { id: string; url: 
         const nodeCount = nodes.length;
 
         // 2. Parse subscription details using the new robust parser
-        const details = parseSubscriptionDetails(userInfoHeader, nodes.map(n => n.name));
+        const details = parseSubscriptionDetails(userInfoHeader, nodes);
 
         // 3. Prepare data for database update
         const now = new Date().toISOString();

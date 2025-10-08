@@ -36,9 +36,11 @@ const defaultFormState = () => ({
   subscription_ids: [] as string[],
   node_ids: [] as string[],
   airport_subscription_options: {
-    polling_mode: 'none' as 'none' | 'hourly' | 'request',
+    strategy: 'all' as 'all' | 'polling' | 'random',
+    polling_mode: 'hourly' as 'hourly' | 'request',
+    use_all: true,
     random: false,
-    timeout: null as number | null,
+    timeout: 10 as number | null,
   },
   node_prefix_settings: {
     enable_subscription_prefix: false,
@@ -101,11 +103,21 @@ const fetchProfileData = async (id: string) => {
       formState.subscription_ids = profile.subscription_ids || [];
       formState.node_ids = profile.node_ids || [];
       formState.node_prefix_settings = { ...defaultFormState().node_prefix_settings, ...profile.node_prefix_settings };
-      formState.airport_subscription_options = {
-        polling_mode: profile.airport_subscription_options?.polling ? (profile.airport_subscription_options.polling_mode || 'hourly') : 'none',
-        random: profile.airport_subscription_options?.random || false,
-        timeout: profile.airport_subscription_options?.timeout || null,
-      };
+      const opts = profile.airport_subscription_options || {};
+      if (opts.use_all) {
+        formState.airport_subscription_options.strategy = 'all';
+      } else if (opts.random) {
+        formState.airport_subscription_options.strategy = 'random';
+      } else if (opts.polling) {
+        formState.airport_subscription_options.strategy = 'polling';
+      } else {
+        // Default to 'all' if no strategy is defined, to match new behavior
+        formState.airport_subscription_options.strategy = 'all';
+      }
+      formState.airport_subscription_options.polling_mode = opts.polling_mode || 'hourly';
+      formState.airport_subscription_options.random = opts.random || false;
+      formState.airport_subscription_options.use_all = opts.use_all || false;
+      formState.airport_subscription_options.timeout = opts.timeout || 10;
       formState.subconverter_backend_id = profile.subconverter_backend_id || null;
       formState.subconverter_config_id = profile.subconverter_config_id || null;
     } else {
@@ -163,11 +175,9 @@ const isNodeGroupIndeterminate = (group: { id: string; name: string }[]) => {
 watch(() => formState.node_prefix_settings.enable_group_name_prefix, (newValue: boolean) => {
   if (newValue) formState.node_prefix_settings.manual_node_prefix = '';
 });
-watch(() => formState.airport_subscription_options.polling_mode, (newValue: string) => {
-  if (newValue !== 'none') formState.airport_subscription_options.random = false;
-});
-watch(() => formState.airport_subscription_options.random, (newValue: boolean) => {
-  if (newValue) formState.airport_subscription_options.polling_mode = 'none';
+watch(() => formState.airport_subscription_options.strategy, (strategy) => {
+  formState.airport_subscription_options.use_all = strategy === 'all';
+  formState.airport_subscription_options.random = strategy === 'random';
 });
 
 // --- Save Logic ---
@@ -184,9 +194,10 @@ const handleSave = async () => {
         node_ids: formState.node_ids,
         node_prefix_settings: formState.node_prefix_settings,
         airport_subscription_options: {
-          polling: formState.airport_subscription_options.polling_mode !== 'none',
+          polling: formState.airport_subscription_options.strategy === 'polling',
           polling_mode: formState.airport_subscription_options.polling_mode,
-          random: formState.airport_subscription_options.random,
+          random: formState.airport_subscription_options.strategy === 'random',
+          use_all: formState.airport_subscription_options.strategy === 'all',
           timeout: formState.airport_subscription_options.timeout,
         },
         subconverter_backend_id: formState.subconverter_backend_id,
@@ -318,15 +329,28 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                     <n-space align="center" justify="space-between">
                       <n-form-item label="订阅选择策略" label-placement="left" class="mb-0">
                         <n-select
+                          v-model:value="formState.airport_subscription_options.strategy"
+                          :options="[
+                            { label: '全部使用 (推荐)', value: 'all' },
+                            { label: '轮询', value: 'polling' },
+                            { label: '随机选择', value: 'random' },
+                          ]"
+                          style="width: 180px"
+                        />
+                      </n-form-item>
+
+                      <n-form-item v-if="formState.airport_subscription_options.strategy === 'polling'" label="轮询模式" label-placement="left" class="mb-0">
+                         <n-select
                           v-model:value="formState.airport_subscription_options.polling_mode"
                           :options="[
-                            { label: '全部使用', value: 'none' },
                             { label: '按小时轮换', value: 'hourly' },
                             { label: '按次访问轮换', value: 'request' },
+                            { label: '分组轮询组合', value: 'group_request' },
                           ]"
                           style="width: 150px"
                         />
                       </n-form-item>
+
                       <n-form-item label="请求超时(秒)" label-placement="left" class="mb-0">
                         <n-input-number
                           v-model:value="formState.airport_subscription_options.timeout"
@@ -336,9 +360,6 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                           clearable
                           style="width: 120px"
                         />
-                      </n-form-item>
-                      <n-form-item label="随机选择一个" label-placement="left" class="mb-0">
-                        <n-switch v-model:value="formState.airport_subscription_options.random" />
                       </n-form-item>
                     </n-space>
                   </template>

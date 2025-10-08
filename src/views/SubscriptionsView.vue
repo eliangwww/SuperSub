@@ -84,7 +84,8 @@ const showUpdateLogModal = ref(false)
 const updateLog = ref<{
   success: { name: string }[]
   failed: Subscription[]
-}>({ success: [], failed: [] })
+  expiring: Subscription[]
+}>({ success: [], failed: [], expiring: [] })
 const updateLogLoading = ref(false)
 const updateProgress = ref({ current: 0, total: 0 })
 let updateAbortController: AbortController | null = null
@@ -97,6 +98,8 @@ const updateSettings = reactive({
   retries: 2,
   delay: 500, // ms delay between requests in the same batch
   batchDelay: 1000, // ms delay between batches
+  expiringDaysThreshold: 2,
+  expiringTrafficThresholdGB: 1,
 })
 
 // For Subscription Rules
@@ -495,51 +498,53 @@ const executeSubscriptionUpdates = async () => {
     return { success: false, data: sub, error: '未知重试错误' } // Should not be reached
   })
   
-  const executing = new Set<Promise<any>>()
+  const results = []
+  const executing = new Set<Promise<void>>()
 
   try {
-    for (const [index, task] of tasks.entries()) {
-      if (signal.aborted) {
-        subsToUpdate.value.slice(index).forEach(sub => {
-          updateLog.value.failed.push({ ...sub, error: '已中止' })
-        })
-        break
-      }
-      
-      const p = task().then(result => {
-        updateProgress.value.current++
-        if (result.success) {
-          updateLog.value.success.push({ name: result.data.name })
-        } else {
-          const failedSub = { ...result.data, error: result.error || '未知错误' }
-          updateLog.value.failed.push(failedSub)
-        }
-      })
+    const updatePromises = tasks.map(task => async () => {
+      const result = await task()
+      updateProgress.value.current++
+      if (result.success) {
+        const sub = result.data;
+        const trafficThreshold = updateSettings.expiringTrafficThresholdGB * 1024 * 1024 * 1024;
+        const isExpiring = (sub.remaining_days !== null && sub.remaining_days !== undefined && sub.remaining_days < updateSettings.expiringDaysThreshold) ||
+                           (sub.remaining_traffic !== null && sub.remaining_traffic !== undefined && sub.remaining_traffic < trafficThreshold);
 
+        if (isExpiring) {
+          updateLog.value.expiring.push(sub);
+        } else {
+          updateLog.value.success.push({ name: sub.name });
+        }
+      } else {
+        const failedSub = { ...result.data, error: result.error || '未知错误' };
+        updateLog.value.failed.push(failedSub);
+      }
+      results.push(result)
+    })
+
+    for (const promiseFn of updatePromises) {
+      if (signal.aborted) break
+
+      const p = promiseFn()
       executing.add(p)
+
       if (delay > 0) {
         await new Promise(resolve => setTimeout(resolve, delay))
       }
-      p.finally(() => executing.delete(p))
 
       if (executing.size >= concurrency) {
         await Promise.race(executing)
-        // After a batch is completed, wait for the batch delay
-        if (updateSettings.batchDelay > 0) {
-          await new Promise(resolve => setTimeout(resolve, updateSettings.batchDelay))
-        }
       }
+      
+      p.finally(() => executing.delete(p))
     }
-    await Promise.all(executing)
+
+    await Promise.allSettled(executing)
+
   } catch (error) {
     console.error('An unexpected error occurred during update execution:', error)
   } finally {
-    updateLogLoading.value = false
-    if (signal.aborted) {
-      message.warning('更新任务已中止')
-    } else {
-      message.success('订阅更新任务完成！')
-    }
     updateAbortController = null
   }
 }
@@ -550,7 +555,7 @@ const prepareAndShowUpdateModal = (subs: Subscription[]) => {
     return
   }
   subsToUpdate.value = subs
-  updateLog.value = { success: [], failed: [] }
+  updateLog.value = { success: [], failed: [], expiring: [] }
   updateProgress.value = { current: 0, total: subs.length }
   updateStage.value = 'config'
   showUpdateLogModal.value = true
@@ -571,28 +576,22 @@ const handleRetryFailed = () => {
 const handleCancelUpdate = () => {
   if (updateLogLoading.value && updateAbortController) {
     updateAbortController.abort()
-  } else {
-    showUpdateLogModal.value = false
+    updateLogLoading.value = false // Force stop loading on abort
   }
+  showUpdateLogModal.value = false
 }
 
 const handleClearFailed = () => {
-  const subsToClear = updateLog.value.failed.filter(sub =>
-    sub.error !== '已中止' && (
-      sub.error || // Condition 1: Has an error (failed update)
-      sub.remaining_traffic === 0 || // Condition 2: Remaining traffic is exactly 0
-      (sub.remaining_days !== null && sub.remaining_days !== undefined && sub.remaining_days <= 0) // Condition 3: Remaining days is 0 or less
-    )
-  );
+  const subsToClear = updateLog.value.failed.filter(sub => sub.error !== '已中止');
 
   if (subsToClear.length === 0) {
-    message.info('没有符合条件的失效订阅可以清除');
+    message.info('没有更新失败的订阅可以清除');
     return;
   }
 
   dialog.warning({
-    title: '确认清除失效订阅',
-    content: `即将删除 ${subsToClear.length} 个失效订阅，此操作不可恢复。确定要继续吗？`,
+    title: '确认清除失败订阅',
+    content: `即将删除 ${subsToClear.length} 个更新失败的订阅，此操作不可恢复。确定要继续吗？`,
     positiveText: '确定清除',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -600,10 +599,40 @@ const handleClearFailed = () => {
       try {
         const response = await api.post('/subscriptions/batch-delete', { ids: idsToClear });
         if (response.data.success) {
-          message.success(`成功清除了 ${idsToClear.length} 个失效订阅`);
-          // Remove cleared subs from the log
+          message.success(`成功清除了 ${idsToClear.length} 个失败订阅`);
           updateLog.value.failed = updateLog.value.failed.filter(sub => !idsToClear.includes(sub.id));
-          fetchSubscriptions(); // Refresh the main list
+          fetchSubscriptions();
+        } else {
+          message.error(response.data.message || '清除失败');
+        }
+      } catch (err) {
+        message.error('请求失败，请稍后重试');
+      }
+    }
+  });
+};
+
+const handleClearExpiring = () => {
+  const subsToClear = updateLog.value.expiring;
+
+  if (subsToClear.length === 0) {
+    message.info('没有即将到期的订阅可以清除');
+    return;
+  }
+
+  dialog.warning({
+    title: '确认清除即将到期的订阅',
+    content: `即将删除 ${subsToClear.length} 个即将到期的订阅，此操作不可恢复。确定要继续吗？`,
+    positiveText: '确定清除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      const idsToClear = subsToClear.map(sub => sub.id);
+      try {
+        const response = await api.post('/subscriptions/batch-delete', { ids: idsToClear });
+        if (response.data.success) {
+          message.success(`成功清除了 ${idsToClear.length} 个即将到期的订阅`);
+          updateLog.value.expiring = updateLog.value.expiring.filter(sub => !idsToClear.includes(sub.id));
+          fetchSubscriptions();
         } else {
           message.error(response.data.message || '清除失败');
         }
@@ -1195,6 +1224,23 @@ onMounted(() => {
   watch(updateSettings, (newSettings: typeof updateSettings) => {
     localStorage.setItem('subscriptionUpdateSettings', JSON.stringify(newSettings))
   })
+
+  // Watch for the progress to complete
+  watch(updateProgress, (progress) => {
+    if (progress.total > 0 && progress.current === progress.total) {
+      // Use nextTick to ensure the final progress number is rendered before showing the message
+      nextTick(() => {
+        if (updateLogLoading.value) { // Check if it's still considered loading
+          message.success('订阅更新任务完成！')
+          if (checkedRowKeys.value.length > 0) {
+            checkedRowKeys.value = []
+          }
+          fetchSubscriptions()
+          updateLogLoading.value = false
+        }
+      })
+    }
+  }, { deep: true })
 })
 </script>
 
@@ -1530,6 +1576,14 @@ onMounted(() => {
             <n-input-number v-model:value="updateSettings.batchDelay" :min="0" :step="100" />
             <template #feedback>每完成一个并发批次后，等待一段时间再开始下一个批次。</template>
           </n-form-item>
+          <n-form-item label="到期天数阈值">
+           <n-input-number v-model:value="updateSettings.expiringDaysThreshold" :min="0" :step="1" />
+           <template #feedback>当剩余天数小于此值时，将归类为“即将到期”。</template>
+         </n-form-item>
+         <n-form-item label="到期流量阈值 (GB)">
+           <n-input-number v-model:value="updateSettings.expiringTrafficThresholdGB" :min="0" :step="1" />
+           <template #feedback>当剩余流量小于此值 (GB) 时，将归类为“即将到期”。</template>
+         </n-form-item>
         </n-form>
       </div>
 
@@ -1542,7 +1596,10 @@ onMounted(() => {
             :indicator-placement="'inside'"
             processing
           />
-          <p class="mt-2">正在更新: {{ updateProgress.current }} / {{ updateProgress.total }}</p>
+          <p class="mt-2">
+            <span v-if="updateLogLoading">正在更新: {{ updateProgress.current }} / {{ updateProgress.total }}</span>
+            <span v-else>更新完成: {{ updateProgress.current }} / {{ updateProgress.total }}</span>
+          </p>
         </div>
         <n-collapse>
           <n-collapse-item :title="`更新成功 (${updateLog.success.length})`" name="success">
@@ -1553,6 +1610,26 @@ onMounted(() => {
               <n-text v-if="updateLog.success.length === 0">没有订阅成功更新。</n-text>
             </div>
           </n-collapse-item>
+         <n-collapse-item :title="`即将到期 (${updateLog.expiring.length})`" name="expiring">
+           <div style="max-height: 200px; overflow-y: auto;">
+             <div v-if="updateLog.expiring.length > 0">
+               <div v-for="sub in updateLog.expiring" :key="sub.id" class="mb-2 p-2 border rounded border-yellow-500">
+                 <div class="flex justify-between items-center">
+                   <n-tag type="warning">{{ sub.name }}</n-tag>
+                   <n-space :size="4">
+                     <n-tag v-if="sub.remaining_traffic !== null && sub.remaining_traffic !== undefined" size="small" type="warning">
+                       流量: {{ formatBytes(sub.remaining_traffic) }}
+                     </n-tag>
+                     <n-tag v-if="sub.remaining_days !== null && sub.remaining_days !== undefined" size="small" type="warning">
+                       天数: {{ sub.remaining_days }} 天
+                     </n-tag>
+                   </n-space>
+                 </div>
+               </div>
+             </div>
+             <n-text v-else>没有即将到期的订阅。</n-text>
+           </div>
+         </n-collapse-item>
           <n-collapse-item :title="`更新失败 (${updateLog.failed.length})`" name="failed">
              <div style="max-height: 200px; overflow-y: auto;">
               <div v-if="updateLog.failed.length > 0">
@@ -1563,7 +1640,7 @@ onMounted(() => {
                        <n-tag v-if="sub.remaining_traffic !== null && sub.remaining_traffic !== undefined" size="small" :type="sub.remaining_traffic === 0 ? 'error' : 'default'">
                          流量: {{ formatBytes(sub.remaining_traffic) }}
                        </n-tag>
-                        <n-tag v-if="sub.remaining_days !== null && sub.remaining_days !== undefined" size="small" :type="sub.remaining_days === 0 ? 'error' : 'default'">
+                        <n-tag v-if="sub.remaining_days !== null && sub.remaining_days !== undefined" size="small" :type="sub.remaining_days <= 0 ? 'error' : 'default'">
                          天数: {{ sub.remaining_days }} 天
                        </n-tag>
                      </n-space>
@@ -1594,12 +1671,20 @@ onMounted(() => {
               重试失败项
             </n-button>
              <n-button
+              type="warning"
+              ghost
+              @click="handleClearExpiring"
+              :disabled="updateLog.expiring.length === 0 || updateLogLoading"
+            >
+              清除即将到期
+            </n-button>
+             <n-button
               type="error"
               ghost
               @click="handleClearFailed"
-              :disabled="updateLog.failed.filter(s => s.error || s.remaining_traffic === 0 || (s.remaining_days !== null && s.remaining_days !== undefined && s.remaining_days <= 0)).length === 0 || updateLogLoading"
+              :disabled="updateLog.failed.filter(s => s.error !== '已中止').length === 0 || updateLogLoading"
             >
-              清除失效订阅
+              清除失败项
             </n-button>
           </div>
         </n-space>
