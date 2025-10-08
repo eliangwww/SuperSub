@@ -195,11 +195,16 @@ const parseSubscriptionDetails = (
     if (remainingTrafficMatch && remainingTrafficMatch[1]) {
         remainingTraffic = sizeToBytes(remainingTrafficMatch[1]);
     } else {
-        const remainingTrafficNoUnitMatch = text.match(/(?:剩余流量|剩余|流量)[\:：\s]*(\d+(?:\.\d+)?)(?![\s\S]*[TGMK]?B)/i);
-        if (remainingTrafficNoUnitMatch && remainingTrafficNoUnitMatch[1]) {
+        // Fallback for cases like "剩余流量: 0" (no unit)
+        // Fallback for cases like "剩余流量: 0" (no unit)
+        const remainingTrafficNoUnitMatch = text.match(/(?:剩余流量|剩余|流量)[\:：\s]*(\d+(?:\.\d+)?)/i);
+        if (remainingTrafficNoUnitMatch && remainingTrafficNoUnitMatch[1] && typeof remainingTrafficNoUnitMatch.index === 'number') {
             const parsedValue = parseFloat(remainingTrafficNoUnitMatch[1]);
-            if (parsedValue === 0) {
-                remainingTraffic = 0;
+            // Check if there's a unit nearby. If not, we can assume it's a raw value.
+            const startIndex = remainingTrafficNoUnitMatch.index;
+            const context = text.substring(startIndex, startIndex + remainingTrafficNoUnitMatch[0].length + 5);
+            if (!/[TGMK]B/i.test(context)) {
+                 remainingTraffic = parsedValue; // Assign the value directly
             }
         }
     }
