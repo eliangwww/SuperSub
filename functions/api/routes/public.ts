@@ -89,7 +89,9 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
         const content = JSON.parse(profile.content || '{}');
         const userId = profile.user_id;
 
-    const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile);
+    // When generating nodes for a public subscription link (even for subconverter), it's a real use, not a dry run.
+    // So, isDryRun should be false to update the polling index.
+    const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, false);
 
     if (allNodes.length === 0) {
         return c.text('No nodes found for this profile.', 404);
@@ -139,7 +141,7 @@ publicRoutes.get('/:sub_token/:profile_alias', async (c) => {
 
             const targetUrl = new URL(`${backend.url}/sub`);
             targetUrl.searchParams.set('target', targetClient);
-            targetUrl.searchParams.set('url', currentUrl.toString()); // Pass our own URL
+            targetUrl.searchParams.set('url', `${currentUrl.toString()}&_t=${Date.now()}`); // Pass our own URL with a timestamp
             targetUrl.searchParams.set('config', config.url);
             targetUrl.searchParams.set('filename', profile.name);
 
