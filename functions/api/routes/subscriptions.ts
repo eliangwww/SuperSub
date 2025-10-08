@@ -141,25 +141,7 @@ export const applySubscriptionRules = (nodes: (ParsedNode & { id: string; raw: s
 };
 
 
-// Helper to parse 'subscription-userinfo' header
-const parseSubscriptionInfo = (userInfo: string): { upload: number; download: number; total: number; expire: number | null } => {
-    const info: any = {};
-    userInfo.split(';').forEach(part => {
-        const [key, value] = part.split('=').map(s => s.trim());
-        if (key && value) {
-            // Use parseFloat to handle potential non-integer values, though spec is integer bytes
-            const parsedValue = parseFloat(value);
-            info[key] = isNaN(parsedValue) ? 0 : parsedValue;
-        }
-    });
-    return {
-        upload: info.upload || 0,
-        download: info.download || 0,
-        total: info.total || 0,
-        expire: info.expire || null,
-    };
-};
-
+// Helper to convert size string (e.g., "10.5 GB") to bytes
 const sizeToBytes = (sizeStr: string): number => {
     if (!sizeStr) return 0;
     const match = sizeStr.match(/([\d.]+)\s*(TB|GB|MB|KB|T|G|M|K)?/i);
@@ -177,48 +159,87 @@ const sizeToBytes = (sizeStr: string): number => {
     }
 };
 
-const bytesToSize = (bytes: number): string => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
+// New, more robust parser for subscription details
+const parseSubscriptionDetails = (
+    userInfoHeader: string | null,
+    nodeNames: string[]
+): { remainingTraffic: number | null; remainingDays: number | null; expiresAt: string | null } => {
+    let remainingTraffic: number | null = null;
+    let expiresAt: Date | null = null;
 
+    // 1. Parse from subscription-userinfo header (standard method)
+    if (userInfoHeader) {
+        const info: any = {};
+        userInfoHeader.split(';').forEach(part => {
+            const [key, value] = part.split('=').map(s => s.trim());
+            if (key && value) {
+                const parsedValue = parseFloat(value);
+                info[key] = isNaN(parsedValue) ? 0 : parsedValue;
+            }
+        });
 
-// Final, simplified, and correct approach.
-const extractInfoFromNodeNames = (nodeNames: string[]): { upload: number; download: number; total: number; expire: number | null } => {
-    const text = nodeNames.join(' '); // Combine all node names into a single string
-    const result = { upload: 0, download: 0, total: 0, expire: null as number | null };
-
-    // --- Simplified Data Usage Extraction ---
-    const remainingMatch = text.match(/剩余流量[\:：]([\d.]+\s*[TGMK]B?)/i);
-    if (remainingMatch) {
-        const remainingBytes = sizeToBytes(remainingMatch[1]);
-        // When only "remaining" is available, we can treat it as the total available from this point.
-        result.total = remainingBytes;
-        result.download = 0;
-        result.upload = 0;
+        if (info.total) {
+            const used = (info.upload || 0) + (info.download || 0);
+            remainingTraffic = info.total - used;
+        }
+        if (info.expire) {
+            expiresAt = new Date(info.expire * 1000);
+        }
     }
 
-    // --- Simplified Expiry Info Extraction ---
-    const expiryDateMatch = text.match(/套餐到期[\:：](\d{4}-\d{2}-\d{2})/i);
-    if (expiryDateMatch) {
+    // 2. Parse from node names (fallback/override method)
+    const text = nodeNames.join(' ');
+    
+    // Regex for various "remaining traffic" formats
+    const remainingTrafficMatch = text.match(/(?:剩余流量|剩余|流量)[\:：\s]*([\d.]+\s*[TGMK]?B)/i);
+    if (remainingTrafficMatch && remainingTrafficMatch[1]) {
+        remainingTraffic = sizeToBytes(remainingTrafficMatch[1]);
+    } else {
+        const remainingTrafficNoUnitMatch = text.match(/(?:剩余流量|剩余|流量)[\:：\s]*(\d+(?:\.\d+)?)(?![\s\S]*[TGMK]?B)/i);
+        if (remainingTrafficNoUnitMatch && remainingTrafficNoUnitMatch[1]) {
+            const parsedValue = parseFloat(remainingTrafficNoUnitMatch[1]);
+            if (parsedValue === 0) {
+                remainingTraffic = 0;
+            }
+        }
+    }
+
+    // Regex for various expiry formats
+    const expiryDateMatch = text.match(/(?:到期|套餐到期)[\:：\s]*(\d{4}-\d{2}-\d{2})/i);
+    if (expiryDateMatch && expiryDateMatch[1]) {
         const date = new Date(expiryDateMatch[1]);
         if (!isNaN(date.getTime())) {
-            result.expire = Math.floor(date.getTime() / 1000);
+            expiresAt = date;
+        }
+    } else {
+        const remainingDaysMatch = text.match(/(?:剩余|可用|距离下次重置剩余)[\:：\s]*(\d+)\s*天/i);
+        if (remainingDaysMatch && remainingDaysMatch[1]) {
+            const days = parseInt(remainingDaysMatch[1], 10);
+            if (!isNaN(days)) {
+                const newExpiry = new Date();
+                newExpiry.setDate(newExpiry.getDate() + days);
+                expiresAt = newExpiry;
+            }
         }
     }
 
-    const remainingDaysMatch = text.match(/(?:距离下次重置剩余|剩余|可用)[\:：](\d+)\s*天/i);
-    if (remainingDaysMatch && !result.expire) { // Avoid overwriting a specific date
-        const days = parseInt(remainingDaysMatch[1], 10);
-        if (!isNaN(days)) {
-            result.expire = Math.floor((Date.now() / 1000) + (days * 86400));
-        }
+    let remainingDays: number | null = null;
+    if (expiresAt) {
+        const now = new Date();
+        // Set time to 00:00:00 to compare dates only
+        now.setHours(0, 0, 0, 0);
+        const expiryDate = new Date(expiresAt);
+        expiryDate.setHours(0, 0, 0, 0);
+        
+        const diffTime = expiryDate.getTime() - now.getTime();
+        remainingDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     }
-    
-    return result;
+
+    return {
+        remainingTraffic: remainingTraffic,
+        remainingDays: remainingDays,
+        expiresAt: expiresAt ? expiresAt.toISOString() : null,
+    };
 };
 
 
@@ -321,36 +342,37 @@ const updateSingleSubscription = async (db: D1Database, sub: { id: string; url: 
         const userInfoHeader = response.headers.get('subscription-userinfo');
         const rawContent = await response.text();
 
-        // The correct, final logic:
-        // 1. Parse content into structured nodes, this handles all formats (YAML, Base64, etc.)
+        // 1. Parse content into structured nodes
         const nodes = parseSubscriptionContent(rawContent);
         const nodeCount = nodes.length;
 
-        // 2. Extract info from the names of the parsed nodes.
-        const infoFromNodes = extractInfoFromNodeNames(nodes.map(n => n.name));
-        
-        // 3. Get header info as a fallback.
-        let headerInfo: { upload: number; download: number; total: number; expire: number | null } = { upload: 0, download: 0, total: 0, expire: null };
-        if (userInfoHeader) {
-            headerInfo = parseSubscriptionInfo(userInfoHeader);
-        }
+        // 2. Parse subscription details using the new robust parser
+        const details = parseSubscriptionDetails(userInfoHeader, nodes.map(n => n.name));
 
-        // 4. Combine, giving node-extracted info priority.
-        const finalInfo = {
-            upload: infoFromNodes.upload > 0 ? infoFromNodes.upload : headerInfo.upload,
-            download: infoFromNodes.download > 0 ? infoFromNodes.download : headerInfo.download,
-            total: infoFromNodes.total > 0 ? infoFromNodes.total : headerInfo.total,
-            expire: infoFromNodes.expire ? infoFromNodes.expire : headerInfo.expire,
-        };
-
-        const subscriptionInfoString = `upload=${finalInfo.upload};download=${finalInfo.download};total=${finalInfo.total}`;
-        const expiresAt = finalInfo.expire ? new Date(finalInfo.expire * 1000).toISOString() : null;
-        
+        // 3. Prepare data for database update
         const now = new Date().toISOString();
+        const oldInfoString = `Parsed from headers: ${userInfoHeader || 'N/A'}. Parsed from nodes: ${nodes.map(n => n.name).join(', ')}`;
 
         await db.prepare(
-            'UPDATE subscriptions SET node_count = ?, last_updated = ?, error = NULL, expires_at = ?, subscription_info = ? WHERE id = ?'
-        ).bind(nodeCount, now, expiresAt, subscriptionInfoString, sub.id).run();
+            `UPDATE subscriptions
+             SET
+                node_count = ?,
+                last_updated = ?,
+                error = NULL,
+                expires_at = ?,
+                subscription_info = ?,
+                remaining_traffic = ?,
+                remaining_days = ?
+             WHERE id = ?`
+        ).bind(
+            nodeCount,
+            now,
+            details.expiresAt,
+            oldInfoString, // Store original info for debugging if needed
+            details.remainingTraffic,
+            details.remainingDays,
+            sub.id
+        ).run();
 
         const updatedSub = await db.prepare('SELECT * FROM subscriptions WHERE id = ?').bind(sub.id).first();
 
