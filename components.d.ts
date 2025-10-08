@@ -13,6 +13,7 @@ declare module 'vue' {
     ConversionSettings: typeof import('./src/components/settings/ConversionSettings.vue')['default']
     GeneralSettings: typeof import('./src/components/settings/GeneralSettings.vue')['default']
     Layout: typeof import('./src/components/Layout.vue')['default']
+    NSpin: typeof import('naive-ui')['NSpin']
     NText: typeof import('naive-ui')['NText']
     ProfileForm: typeof import('./src/components/settings/ProfileForm.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

@@ -80,6 +80,7 @@ export interface Profile {
   airport_subscription_options?: {
     polling?: boolean;
     random?: boolean;
+    timeout?: number; // in seconds
   };
 
   // Generation mode fields

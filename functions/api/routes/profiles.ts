@@ -2,12 +2,14 @@ import { Hono } from 'hono';
 import type { Env } from '../utils/types';
 import { manualAuthMiddleware } from '../middleware/auth';
 import { parseNodeLinks, ParsedNode } from '../../../src/utils/nodeParser';
-import { applySubscriptionRules, parseSubscriptionContent, userAgents } from './subscriptions';
+import { applySubscriptionRules, parseSubscriptionContent } from './subscriptions';
+import { fetchSubscriptionContent } from '../utils/network';
+import { userAgents } from '../utils/constants';
 
 const profiles = new Hono<{ Bindings: Env }>();
 
 
-export const generateProfileNodes = async (env: Env, executionCtx: ExecutionContext, profile: any) => {
+export const generateProfileNodes = async (env: Env, executionCtx: ExecutionContext, profile: any, isDryRun: boolean = false) => {
     const content = JSON.parse(profile.content || '{}');
     const userId = profile.user_id;
 
@@ -18,64 +20,110 @@ export const generateProfileNodes = async (env: Env, executionCtx: ExecutionCont
         let { results: subscriptions } = await env.DB.prepare(`SELECT id, name, url FROM subscriptions WHERE id IN (${subPlaceholders}) AND user_id = ?`).bind(...content.subscription_ids, userId).all<{ id: string; name: string; url: string; }>();
 
         const airportOptions = content.airport_subscription_options || {};
+        const timeout = airportOptions.timeout || 10; // Default to 10 seconds
 
-        if (subscriptions && subscriptions.length > 0) {
+        let activeSubscriptions = subscriptions ? [...subscriptions] : [];
+        let nodesSourceSub: { id: string; name: string; url: string; } | null = null;
+        let subContent: string | null = null;
+
+        if (activeSubscriptions.length > 0) {
             if (airportOptions.random) {
-                const randomIndex = Math.floor(Math.random() * subscriptions.length);
-                subscriptions = [subscriptions[randomIndex]];
+                const randomIndex = Math.floor(Math.random() * activeSubscriptions.length);
+                const randomSub = activeSubscriptions[randomIndex];
+                const result = await fetchSubscriptionContent(randomSub.url, timeout);
+                if (result.success) {
+                    nodesSourceSub = randomSub;
+                    subContent = result.content;
+                }
             } else if (airportOptions.polling) {
                 const mode = airportOptions.polling_mode || 'hourly';
                 if (mode === 'request') {
-                    const currentIndex = profile.polling_index || 0;
-                    const pollingIndex = currentIndex % subscriptions.length;
-                    subscriptions = [subscriptions[pollingIndex]];
+                    const startIndex = profile.polling_index || 0;
+                    let found = false;
+                    for (let i = 0; i < activeSubscriptions.length; i++) {
+                        const currentIndex = (startIndex + i) % activeSubscriptions.length;
+                        const currentSub = activeSubscriptions[currentIndex];
+                        
+                        const result = await fetchSubscriptionContent(currentSub.url, timeout);
+                        if (result.success && result.content) {
+                            nodesSourceSub = currentSub;
+                            subContent = result.content;
+                            found = true;
 
-                    const nextIndex = (pollingIndex + 1) % subscriptions.length;
-                    executionCtx.waitUntil(
-                        env.DB.prepare('UPDATE profiles SET polling_index = ? WHERE id = ?')
-                            .bind(nextIndex, profile.id)
-                            .run()
-                    );
+                            if (!isDryRun) {
+                                const nextIndex = (currentIndex + 1) % activeSubscriptions.length;
+                                executionCtx.waitUntil(
+                                    env.DB.prepare(
+                                        `UPDATE profiles SET polling_index = ?, last_successful_subscription_id = ?, last_successful_subscription_content = ?, last_successful_subscription_updated_at = ? WHERE id = ?`
+                                    ).bind(nextIndex, currentSub.id, result.content, new Date().toISOString(), profile.id).run()
+                                );
+                            }
+                            break;
+                        } else {
+                            if ('error' in result) {
+                                console.error(`Polling subscription ${currentSub.id} failed: ${result.error}`);
+                            }
+                        }
+                    }
+
+                    if (!found) {
+                        console.warn(`All polling subscriptions failed for profile ${profile.id}. Using fallback.`);
+                        if (profile.last_successful_subscription_content) {
+                            // When using fallback, directly parse the stored content into nodes.
+                            let fallbackNodes = parseSubscriptionContent(profile.last_successful_subscription_content);
+                            const fallbackSubId = profile.last_successful_subscription_id;
+                            
+                            // Apply rules if the original subscription ID is known
+                            if (fallbackSubId) {
+                                const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(fallbackSubId, userId).all();
+                                if (rules && rules.length > 0) {
+                                    fallbackNodes = applySubscriptionRules(fallbackNodes, rules);
+                                }
+                            }
+                            
+                            const nodesWithSubName = fallbackNodes.map(node => ({ ...node, subscriptionName: 'Last Successful (Fallback)' }));
+                            allNodes.push(...nodesWithSubName);
+                        }
+                        // Clear subContent and nodesSourceSub to prevent the block below from running
+                        subContent = null;
+                        nodesSourceSub = null;
+                    }
                 } else if (mode === 'hourly') {
                     const hour = new Date().getHours();
-                    const pollingIndex = hour % subscriptions.length;
-                    subscriptions = [subscriptions[pollingIndex]];
+                    const hourlyIndex = hour % activeSubscriptions.length;
+                    const hourlySub = activeSubscriptions[hourlyIndex];
+                    const result = await fetchSubscriptionContent(hourlySub.url, timeout);
+                    if (result.success) {
+                        nodesSourceSub = hourlySub;
+                        subContent = result.content;
+                    }
                 }
+            } else {
+                // Default behavior: fetch all subscriptions
+                const results = await Promise.all(activeSubscriptions.map(sub => fetchSubscriptionContent(sub.url, timeout)));
+                results.forEach((result, index) => {
+                    if (result.success) {
+                        const sub = activeSubscriptions[index];
+                        let nodes = parseSubscriptionContent(result.content);
+                        // Apply rules for each subscription individually
+                        // This part might need adjustment based on desired rule application logic for multiple subs
+                        const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
+                        allNodes.push(...nodesWithSubName);
+                    } else {
+                        console.error(`Failed to fetch subscription ${activeSubscriptions[index].id}: ${result.error}`);
+                    }
+                });
             }
         }
 
-        for (const sub of subscriptions) {
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 seconds timeout
-
-                const response = await fetch(sub.url, {
-                    headers: { 'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)] },
-                    signal: controller.signal
-                });
-
-                clearTimeout(timeoutId);
-
-                if (response.ok) {
-                    const subContent = await response.text();
-                    let nodes = parseSubscriptionContent(subContent);
-
-                    const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(sub.id, userId).all();
-                    if (rules && rules.length > 0) {
-                        nodes = applySubscriptionRules(nodes, rules);
-                    }
-                    const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: sub.name }));
-                    allNodes.push(...nodesWithSubName);
-                } else {
-                    console.error(`Failed to fetch subscription ${sub.id}: Status ${response.status}`);
-                }
-            } catch (e: any) {
-                if (e.name === 'AbortError') {
-                    console.error(`Subscription ${sub.id} timed out.`);
-                } else {
-                    console.error(`Failed to process subscription ${sub.id}:`, e);
-                }
+        if (nodesSourceSub && subContent) {
+            let nodes = parseSubscriptionContent(subContent);
+            const { results: rules } = await env.DB.prepare('SELECT * FROM subscription_rules WHERE subscription_id = ? AND user_id = ? AND enabled = 1 ORDER BY sort_order ASC').bind(nodesSourceSub.id, userId).all();
+            if (rules && rules.length > 0) {
+                nodes = applySubscriptionRules(nodes, rules);
             }
+            const nodesWithSubName = nodes.map(node => ({ ...node, subscriptionName: nodesSourceSub.name }));
+            allNodes.push(...nodesWithSubName);
         }
     }
 
@@ -146,7 +194,7 @@ profiles.get('/:id/preview-nodes', async (c) => {
     }
 
     try {
-        const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile);
+        const allNodes = await generateProfileNodes(c.env, c.executionCtx, profile, false); // isDryRun = false to enable polling on preview
         
         const analysis = {
             total: allNodes.length,

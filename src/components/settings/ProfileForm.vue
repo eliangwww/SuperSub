@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted } from 'vue';
-import { useMessage, NButton, NSpace, NForm, NFormItem, NInput, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar, NTabs, NTabPane, NCollapse, NCollapseItem, NSwitch } from 'naive-ui';
+import { useMessage, NButton, NSpace, NForm, NFormItem, NInput, NIcon, NSelect, NDivider, NCard, NGrid, NGi, NCheckboxGroup, NCheckbox, NScrollbar, NTabs, NTabPane, NCollapse, NCollapseItem, NSwitch, NInputNumber } from 'naive-ui';
 import { CopyOutline as CopyIcon } from '@vicons/ionicons5';
 import type { FormInst } from 'naive-ui';
 import type { Profile, Subscription } from '@/types';
@@ -38,6 +38,7 @@ const defaultFormState = () => ({
   airport_subscription_options: {
     polling_mode: 'none' as 'none' | 'hourly' | 'request',
     random: false,
+    timeout: null as number | null,
   },
   node_prefix_settings: {
     enable_subscription_prefix: false,
@@ -103,6 +104,7 @@ const fetchProfileData = async (id: string) => {
       formState.airport_subscription_options = {
         polling_mode: profile.airport_subscription_options?.polling ? (profile.airport_subscription_options.polling_mode || 'hourly') : 'none',
         random: profile.airport_subscription_options?.random || false,
+        timeout: profile.airport_subscription_options?.timeout || null,
       };
       formState.subconverter_backend_id = profile.subconverter_backend_id || null;
       formState.subconverter_config_id = profile.subconverter_config_id || null;
@@ -185,6 +187,7 @@ const handleSave = async () => {
           polling: formState.airport_subscription_options.polling_mode !== 'none',
           polling_mode: formState.airport_subscription_options.polling_mode,
           random: formState.airport_subscription_options.random,
+          timeout: formState.airport_subscription_options.timeout,
         },
         subconverter_backend_id: formState.subconverter_backend_id,
         subconverter_config_id: formState.subconverter_config_id,
@@ -322,6 +325,16 @@ const configOptions = computed(() => allConfigs.value.map(c => ({ label: c.name,
                             { label: '按次访问轮换', value: 'request' },
                           ]"
                           style="width: 150px"
+                        />
+                      </n-form-item>
+                      <n-form-item label="请求超时(秒)" label-placement="left" class="mb-0">
+                        <n-input-number
+                          v-model:value="formState.airport_subscription_options.timeout"
+                          :min="1"
+                          :max="60"
+                          placeholder="默认10"
+                          clearable
+                          style="width: 120px"
                         />
                       </n-form-item>
                       <n-form-item label="随机选择一个" label-placement="left" class="mb-0">
