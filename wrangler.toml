@@ -5,11 +5,12 @@ compatibility_flags = ["nodejs_compat"]
 # D1 Database binding
 [[d1_databases]]
 binding = "DB"
-database_name = "supersub-db"
+database_name = "supersub"
 database_id = "dummy-id-for-local-d1"
 
 [vars]
 JWT_SECRET = "a-very-secret-and-random-string-for-local-dev"
 
 [triggers]
+
 crons = ["0 * * * *"]
