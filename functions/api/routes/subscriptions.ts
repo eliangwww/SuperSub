@@ -173,7 +173,70 @@ const parseSubscriptionDetails = (
     let remainingTraffic: number | null = null;
     let expiresAt: Date | null = null;
 
-    // 1. Parse from subscription-userinfo header (standard method)
+    // ---
+    // Step 1: Parse from node names first, as they are often more accurate.
+    // ---
+    for (const node of nodes) {
+        const name = node.name;
+
+        // Parse expiry date if not already found
+        if (!expiresAt) {
+            const expiryDateMatch = name.match(/(?:到期|套餐到期)[\:：\s]*(\d{4}-\d{2}-\d{2})/i);
+            if (expiryDateMatch && expiryDateMatch[1]) {
+                const date = new Date(expiryDateMatch[1]);
+                if (!isNaN(date.getTime())) {
+                    expiresAt = date;
+                }
+            } else {
+                const remainingDaysMatch = name.match(/(?:距离下次重置剩余|剩余天数|剩余|可用)[\:：\s]*(\d+)\s*天/i);
+                if (remainingDaysMatch && remainingDaysMatch[1]) {
+                    const days = parseInt(remainingDaysMatch[1], 10);
+                    if (!isNaN(days)) {
+                        const newExpiry = new Date();
+                        newExpiry.setDate(newExpiry.getDate() + days);
+                        expiresAt = newExpiry;
+                    }
+                }
+            }
+        }
+
+        // Parse traffic if not already found
+        if (remainingTraffic === null) {
+            // Skip nodes that are clearly about time to avoid confusion
+            if (/天/i.test(name) && !/流量/i.test(name)) {
+                continue;
+            }
+
+            // Try to match with units first (e.g., "50 GB", "1024 MB")
+            const regexWithUnit = /(?:剩余流量|流量)[\:：\s]*([\d.]+[\s+]*[TGMK]?B)/i;
+            const trafficMatchWithUnit = name.match(regexWithUnit);
+            if (trafficMatchWithUnit && trafficMatchWithUnit[1]) {
+                remainingTraffic = sizeToBytes(trafficMatchWithUnit[1]);
+                continue; // Found it, continue to next node to potentially find expiry
+            }
+
+            // If no unit match, try to match unitless numbers (specifically for "0" or other raw numbers)
+            const regexWithoutUnit = /(?:剩余流量|流量)[\:：\s]*(\d+(?:\.\d+)?)/i;
+            const trafficMatchWithoutUnit = name.match(regexWithoutUnit);
+            if (trafficMatchWithoutUnit && trafficMatchWithoutUnit[1] && typeof trafficMatchWithoutUnit.index === 'number') {
+                // Check context to avoid misinterpreting other numbers as traffic
+                const startIndex = trafficMatchWithoutUnit.index;
+                const context = name.substring(startIndex, startIndex + trafficMatchWithoutUnit[0].length + 5);
+                if (!/[TGMK]B/i.test(context)) {
+                    remainingTraffic = parseFloat(trafficMatchWithoutUnit[1]);
+                }
+            }
+        }
+        
+        // If both are found, we can stop iterating
+        if (remainingTraffic !== null && expiresAt) {
+            break;
+        }
+    }
+
+    // ---
+    // Step 2: Fallback to subscription-userinfo header if data is still missing.
+    // ---
     if (userInfoHeader) {
         const info: any = {};
         userInfoHeader.split(';').forEach(part => {
@@ -184,59 +247,13 @@ const parseSubscriptionDetails = (
             }
         });
 
-        if (info.total) {
+        // Only use header data if it wasn't found in the node names
+        if (remainingTraffic === null && info.total) {
             const used = (info.upload || 0) + (info.download || 0);
             remainingTraffic = info.total - used;
         }
-        if (info.expire) {
+        if (!expiresAt && info.expire) {
             expiresAt = new Date(info.expire * 1000);
-        }
-    }
-
-    // 2. Parse from node names
-    // First pass for expiry date
-    for (const node of nodes) {
-        if (expiresAt) {
-            break;
-        }
-        const name = node.name;
-        const expiryDateMatch = name.match(/(?:到期|套餐到期)[\:：\s]*(\d{4}-\d{2}-\d{2})/i);
-        if (expiryDateMatch && expiryDateMatch[1]) {
-            const date = new Date(expiryDateMatch[1]);
-            if (!isNaN(date.getTime())) {
-                expiresAt = date;
-            }
-        } else {
-            const remainingDaysMatch = name.match(/(?:距离下次重置剩余|剩余天数|剩余|可用)[\:：\s]*(\d+)\s*天/i);
-            if (remainingDaysMatch && remainingDaysMatch[1]) {
-                const days = parseInt(remainingDaysMatch[1], 10);
-                if (!isNaN(days)) {
-                    const newExpiry = new Date();
-                    newExpiry.setDate(newExpiry.getDate() + days);
-                    expiresAt = newExpiry;
-                }
-            }
-        }
-    }
-
-    // Second pass for traffic
-    for (const node of nodes) {
-        if (remainingTraffic) {
-            break;
-        }
-        const name = node.name;
-
-        if (/天/i.test(name)) {
-            continue;
-        }
-
-        const regex = /(?:剩余流量)[\:：\s]*([\d.]+[\s+]*[TGMK]?B)/i;
-        const remainingTrafficMatch = name.match(regex);
-
-        if (remainingTrafficMatch && remainingTrafficMatch[1]) {
-            const matchedString = remainingTrafficMatch[1];
-            const bytes = sizeToBytes(matchedString);
-            remainingTraffic = bytes;
         }
     }
 
